@@ -24,7 +24,7 @@ function useAccount() {
     try { setData(await api<Overview>("me")); }
     catch (reason) { if ((reason as { status?: number }).status === 401) router.replace("/"); else setError(reason instanceof Error ? reason.message : "Account could not be loaded"); }
   }, [router]);
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => { const frame = requestAnimationFrame(() => void load()); return () => cancelAnimationFrame(frame); }, [load]);
   return { data, error, load };
 }
 
@@ -59,7 +59,7 @@ export function HistoryPage() {
 
 export function SettingsPage() {
   const { data, error } = useAccount(); const [prefs, setPrefs] = useState(defaultPreferences);
-  useEffect(() => { try { const value = localStorage.getItem("ls_preferences"); if (value) setPrefs((current) => ({ ...current, ...JSON.parse(value) })); } catch { /* Invalid local preferences are ignored. */ } }, []);
+  useEffect(() => { const frame = requestAnimationFrame(() => { try { const value = localStorage.getItem("ls_preferences"); if (value) setPrefs((current) => ({ ...current, ...JSON.parse(value) })); } catch { /* Invalid local preferences are ignored. */ } }); return () => cancelAnimationFrame(frame); }, []);
   const update = (next: Preferences) => { setPrefs(next); localStorage.setItem("ls_preferences", JSON.stringify(next)); };
   const toggleSound = () => { const sound = !prefs.sound; update({ ...prefs, sound }); if (sound) void playSound("notice", true, prefs.notificationVolume); };
   if (!data) return <main className="loading-screen"><p>{error || "Loading settings…"}</p></main>;
@@ -77,7 +77,7 @@ export function SettingsPage() {
 export function AdminPage() {
   const { data, error } = useAccount(); const [users, setUsers] = useState<AdminUser[]>([]); const [audit, setAudit] = useState<Array<Record<string, string | null>>>([]); const [message, setMessage] = useState("");
   const refresh = useCallback(async () => { try { const [nextUsers, nextAudit] = await Promise.all([api<AdminUser[]>("admin/users"), api<Array<Record<string, string | null>>>("admin/audit")]); setUsers(nextUsers); setAudit(nextAudit); } catch (reason) { setMessage(reason instanceof Error ? reason.message : "Admin access unavailable"); } }, []);
-  useEffect(() => { void refresh(); }, [refresh]);
+  useEffect(() => { const frame = requestAnimationFrame(() => void refresh()); return () => cancelAnimationFrame(frame); }, [refresh]);
   async function adjust(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); const form = new FormData(event.currentTarget);
     try { await post(`admin/users/${form.get("userId")}/wallet`, { operation: form.get("operation"), amount: Number(form.get("amount")), reason: form.get("reason") }); setMessage("Adjustment committed and audited."); await refresh(); }

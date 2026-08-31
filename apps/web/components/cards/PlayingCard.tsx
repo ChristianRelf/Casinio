@@ -63,7 +63,7 @@ export function PlayingCard({ rank, suit, hidden = false, compact = false, class
       <div className="deck-card-inner">
         <div className="deck-card-front">
           <div className="corner corner-top"><b>{rank}</b><SuitGlyph suit={suit} /></div>
-          {rank === "A" ? <div className="ace-emblem"><span><SuitGlyph suit={suit} /></span><i /></div> : ["J", "Q", "K"].includes(rank) ? <CourtFigure rank={rank as "J" | "Q" | "K"} suit={suit} /> : <div className="pip-field">{pipPositions[rank as keyof typeof pipPositions].map(([x, y, flip], index) => <SuitGlyph key={index} suit={suit} className={flip ? "pip-flip" : ""} />).map((pip, index) => <span key={index} style={{ left: `${pipPositions[rank as keyof typeof pipPositions][index][0]}%`, top: `${pipPositions[rank as keyof typeof pipPositions][index][1]}%` }}>{pip}</span>)}</div>}
+          {rank === "A" ? <div className="ace-emblem"><span><SuitGlyph suit={suit} /></span><i /></div> : ["J", "Q", "K"].includes(rank) ? <CourtFigure rank={rank as "J" | "Q" | "K"} suit={suit} /> : <div className="pip-field">{pipPositions[rank as keyof typeof pipPositions].map(([x, y, flip], index) => <span key={index} style={{ left: `${x}%`, top: `${y}%` }}><SuitGlyph suit={suit} className={flip ? "pip-flip" : ""} /></span>)}</div>}
           <div className="corner corner-bottom"><b>{rank}</b><SuitGlyph suit={suit} /></div>
         </div>
         <div className="deck-card-back"><div className="back-frame"><div className="back-lattice"><span>LS</span></div></div></div>

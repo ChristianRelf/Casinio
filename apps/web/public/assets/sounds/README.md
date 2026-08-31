@@ -1,21 +1,19 @@
-# Sound asset drop folder
+# Sound library and custom drop folder
 
-Replace the generated development cues in this directory with the finished, licensed one-shot WAV files below. Keep the filenames exact; the web client already maps game events to them.
+The 54 Kenney source effects in `source/kenney-casino-audio/` provide complete local fallbacks for cards, chips, controls, results, reveals, and notices. The web client varies repetitive card/chip sounds and never depends on a remote audio service.
 
-Incoming source packs and custom recordings belong in `source/`; see `source/README.md`. Keep source filenames and license documents intact until the final cues have been selected.
+Custom one-shots belong in `source/custom/`. The client automatically prefers the exact filenames below when they exist and falls back to the reviewed Kenney mapping when they do not. No code change is needed after dropping in a custom file.
 
 ## Required cues
 
-- `deal.wav` - one card leaving the shoe and landing; short and soft
-- `flip.wav` - a single card turning face-up
-- `chip.wav` - chips moving into or across the betting area
-- `chip-land.wav` - a chip or small stack landing with weight
 - `button.wav` - restrained interface press, suitable for frequent use
 - `win.wav` - positive round result without a musical fanfare
 - `loss.wav` - compact impact used with the loss animation and table shake
 - `blackjack.wav` - the strongest positive cue, distinct from a normal win
 - `reveal.wav` - dealer hole-card reveal with brief tension
 - `notice.wav` - neutral turn, join, reconnect, or table notification
+
+`button.wav` and `loss.wav` are already present. Deal, flip, chip movement, and chip landing use the Kenney variations directly.
 
 ## Delivery specification
 
@@ -29,3 +27,5 @@ Incoming source packs and custom recordings belong in `source/`; see `source/REA
 - no spoken words, music loops, copyrighted samples, or baked-in casino ambience
 
 The app is muted until the player enables sound. Effects and notification volume are controlled independently in Settings.
+
+Keep the original license/provenance document for every source pack and custom cue alongside the source files before production distribution. `sound-manifest.json` records the custom and fallback mapping used by validation.

@@ -1,5 +1,12 @@
 {
   "version": 1,
+  "complete": true,
+  "format": "image/png",
+  "basePath": "/assets/dealer/source/",
+  "canvas": {
+    "width": 1600,
+    "height": 1600
+  },
   "registrationPoint": {
     "x": 2205,
     "y": 304

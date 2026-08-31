@@ -12,13 +12,13 @@ export const metadata: Metadata = {
   openGraph: {
     title: "Low Stakes — Private blackjack with friends",
     description: "A private, play-money blackjack table for friends. No purchases, prizes, or cash value.",
-    images: [{ url: "/og.png", width: 1731, height: 909, alt: "Low Stakes private blackjack with friends" }],
+    images: [{ url: "/og.svg", width: 1200, height: 630, alt: "Low Stakes private blackjack with friends" }],
   },
   twitter: {
     card: "summary_large_image",
     title: "Low Stakes — Private blackjack with friends",
     description: "A private, play-money blackjack table for friends. No purchases, prizes, or cash value.",
-    images: ["/og.png"],
+    images: ["/og.svg"],
   },
 };
 

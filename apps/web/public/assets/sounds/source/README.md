@@ -1,6 +1,6 @@
 # Source audio drop
 
-Keep incoming audio untouched here. The selected, web-ready cues are copied to the parent `sounds` directory only after they have been reviewed and mapped.
+Keep incoming audio untouched here. Runtime assets are served directly from these source subfolders so original filenames and provenance remain intact.
 
 ## Kenney Casino Audio Pack
 
@@ -25,4 +25,4 @@ Preferred names are:
 - `blackjack.wav`
 - `reveal.wav`
 
-Extra variations are welcome. Preserve any license or authorship notes alongside the files.
+The client automatically prefers these custom filenames and falls back to the mapped Kenney cue when a file is absent. Extra variations are welcome, but require an explicit mapping. Preserve any license or authorship notes alongside the files.

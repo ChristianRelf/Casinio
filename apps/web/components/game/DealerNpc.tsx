@@ -1,4 +1,6 @@
 "use client";
+/* The supplied sprite canvases must render without an image optimizer changing their registration. */
+/* eslint-disable @next/next/no-img-element */
 
 import { useEffect, useState } from "react";
 
@@ -73,14 +75,18 @@ function DealerFallback() {
   );
 }
 
-export function DealerNpc({ pose = "idle" }: { pose?: DealerPose }) {
+function DealerLayer({ pose, source }: { pose: DealerPose; source: string }) {
   const [loaded, setLoaded] = useState(false);
   const [failed, setFailed] = useState(false);
-  const source = `/assets/dealer/source/${spriteByPose[pose]}`;
 
   useEffect(() => {
-    setLoaded(false);
-    setFailed(false);
+    let active = true;
+    const probe = new Image();
+    probe.onload = () => { if (active) setLoaded(true); };
+    probe.onerror = () => { if (active) setFailed(true); };
+    probe.src = source;
+    if (probe.complete && probe.naturalWidth > 0) queueMicrotask(() => { if (active) setLoaded(true); });
+    return () => { active = false; };
   }, [source]);
 
   return (
@@ -107,4 +113,9 @@ export function DealerNpc({ pose = "idle" }: { pose?: DealerPose }) {
       <span className="dealer-vector-fallback" aria-hidden="true"><DealerFallback /></span>
     </div>
   );
+}
+
+export function DealerNpc({ pose = "idle" }: { pose?: DealerPose }) {
+  const source = `/assets/dealer/source/${spriteByPose[pose]}`;
+  return <DealerLayer key={source} pose={pose} source={source} />;
 }

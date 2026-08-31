@@ -1,17 +1,17 @@
 {
   "version": 1,
-  "format": "audio/wav",
-  "sampleRateHz": 48000,
+  "formats": ["audio/ogg", "audio/wav"],
+  "customDirectory": "source/custom",
   "cues": {
-    "deal": "deal.wav",
-    "flip": "flip.wav",
-    "chipMove": "chip.wav",
-    "chipLand": "chip-land.wav",
-    "button": "button.wav",
-    "win": "win.wav",
-    "loss": "loss.wav",
-    "blackjack": "blackjack.wav",
-    "dealerReveal": "reveal.wav",
-    "notification": "notice.wav"
+    "deal": { "fallback": "source/kenney-casino-audio/card-slide-1.ogg" },
+    "flip": { "fallback": "source/kenney-casino-audio/card-place-1.ogg" },
+    "chipMove": { "fallback": "source/kenney-casino-audio/chips-handle-1.ogg" },
+    "chipLand": { "fallback": "source/kenney-casino-audio/chips-stack-1.ogg" },
+    "button": { "custom": "source/custom/button.wav", "fallback": "source/kenney-casino-audio/chip-lay-2.ogg" },
+    "win": { "custom": "source/custom/win.wav", "fallback": "source/kenney-casino-audio/chips-stack-6.ogg" },
+    "loss": { "custom": "source/custom/loss.wav", "fallback": "source/kenney-casino-audio/chips-collide-4.ogg" },
+    "blackjack": { "custom": "source/custom/blackjack.wav", "fallback": "source/kenney-casino-audio/cards-pack-open-1.ogg" },
+    "dealerReveal": { "custom": "source/custom/reveal.wav", "fallback": "source/kenney-casino-audio/card-fan-2.ogg" },
+    "notification": { "custom": "source/custom/notice.wav", "fallback": "source/kenney-casino-audio/chip-lay-1.ogg" }
   }
 }

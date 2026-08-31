@@ -2,14 +2,14 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { api, post } from "../../lib/client/api";
+import { api } from "../../lib/client/api";
 import type { SessionUser } from "../../packages/contracts/src";
 import { Brand } from "../ui/Brand";
 import { PlayingCard } from "../cards/PlayingCard";
 
 export function AuthScreen() {
-  const router = useRouter(); const [confirmed, setConfirmed] = useState(false); const [busy, setBusy] = useState(false); const [error, setError] = useState(""); const [local, setLocal] = useState(false);
-  useEffect(()=>{ setLocal(location.hostname === "localhost" || location.hostname === "127.0.0.1"); api<{user:SessionUser}|null>("auth/session").then((session)=>{if(session)router.replace("/lobby")}).catch(()=>undefined); },[router]);
+  const router = useRouter(); const [confirmed, setConfirmed] = useState(false); const [busy, setBusy] = useState(false); const [error, setError] = useState(""); const local = process.env.NODE_ENV !== "production";
+  useEffect(()=>{ api<{user:SessionUser}|null>("auth/session").then((session)=>{if(session)router.replace("/lobby")}).catch(()=>undefined); },[router]);
   const devLogin = async (persona: "chris"|"maya"|"arthur") => { if(!confirmed){setError("Confirm the age and play-money notice first.");return} setBusy(true);setError("");try{await api("auth/dev",{method:"POST",body:JSON.stringify({persona}),idempotent:false});router.push("/lobby");router.refresh()}catch(reason){setError(reason instanceof Error?reason.message:"Sign-in failed")}finally{setBusy(false)} };
   return <main className="auth-screen">
     <div className="auth-glow"/><div className="auth-card-fan" aria-hidden="true"><PlayingCard rank="A" suit="spade"/><PlayingCard rank="K" suit="heart"/><PlayingCard rank="7" suit="club"/></div>

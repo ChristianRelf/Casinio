@@ -1,6 +1,6 @@
 # Dealer sprite drop folder
 
-Place the finished transparent dealer images in this directory using these exact names:
+The finished transparent dealer images live in `source/` using these exact names:
 
 - `idle.png` — relaxed neutral posture used between events
 - `welcome.png` — open, welcoming posture for arrivals and reconnects
@@ -25,4 +25,4 @@ Asset requirements:
 - no baked-in text, cards, chips, table, glow, shadow, or background
 - use the same costume, face, palette, and viewing angle in every pose
 
-Layered or oversized PNG source masters can be placed in `source/`. The web-ready PNG files listed above belong in this folder. The current vector dealer remains the fallback until the sprite set is complete.
+The current pack is complete: ten 1600 by 1600 PNGs are registered in `sprite-manifest.json`. The web renderer uses those exact source canvases and falls back to the local vector dealer only if an image cannot load. Use `/dev/dealer` in development to check every pose without changing table state.
