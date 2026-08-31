@@ -1,11 +1,35 @@
 "use client";
 
-export type DealerPose = "idle" | "dealing" | "reveal" | "waiting" | "house-win" | "player-win";
+import { useEffect, useState } from "react";
 
-export function DealerNpc({ pose = "idle" }: { pose?: DealerPose }) {
+export type DealerPose =
+  | "idle"
+  | "welcome"
+  | "deal"
+  | "waiting"
+  | "reveal"
+  | "dealer-win"
+  | "player-win"
+  | "blackjack"
+  | "bust"
+  | "table-event";
+
+const spriteByPose: Record<DealerPose, string> = {
+  idle: "idle.png",
+  welcome: "welcome.png",
+  deal: "deal.png",
+  waiting: "waiting.png",
+  reveal: "reveal.png",
+  "dealer-win": "dealer-win.png",
+  "player-win": "player-win.png",
+  blackjack: "blackjack.png",
+  bust: "bust.png",
+  "table-event": "table-event.png",
+};
+
+function DealerFallback() {
   return (
-    <div className={`dealer-npc dealer-pose-${pose}`} aria-label={`The automated dealer is ${pose.replace("-", " ")}`}>
-      <svg viewBox="0 0 260 236" role="img" aria-hidden="true">
+      <svg viewBox="0 0 260 236" aria-hidden="true">
         <defs>
           <linearGradient id="vest" x1="0" y1="0" x2="1" y2="1"><stop stopColor="#282b27"/><stop offset="1" stopColor="#111411"/></linearGradient>
           <linearGradient id="shirt" x1="0" y1="0" x2="0" y2="1"><stop stopColor="#f0e5cf"/><stop offset="1" stopColor="#b9aa91"/></linearGradient>
@@ -46,6 +70,41 @@ export function DealerNpc({ pose = "idle" }: { pose?: DealerPose }) {
           <g className="npc-deal-card"><rect x="215" y="198" width="24" height="34" rx="2" fill="#f0e6d2" stroke="#8a744e"/><path d="m221 207 4-5 4 5-4 5Z" fill="#a83a35"/></g>
         </g>
       </svg>
+  );
+}
+
+export function DealerNpc({ pose = "idle" }: { pose?: DealerPose }) {
+  const [loaded, setLoaded] = useState(false);
+  const [failed, setFailed] = useState(false);
+  const source = `/assets/dealer/source/${spriteByPose[pose]}`;
+
+  useEffect(() => {
+    setLoaded(false);
+    setFailed(false);
+  }, [source]);
+
+  return (
+    <div
+      className={`dealer-npc dealer-pose-${pose} ${loaded ? "sprite-ready" : ""}`}
+      role="img"
+      aria-label={`The automated dealer is ${pose.replaceAll("-", " ")}`}
+      data-registration-x="2205"
+      data-registration-y="304"
+    >
+      {!failed && (
+        <img
+          key={source}
+          className="dealer-sprite"
+          src={source}
+          alt=""
+          aria-hidden="true"
+          draggable={false}
+          decoding="async"
+          onLoad={() => setLoaded(true)}
+          onError={() => setFailed(true)}
+        />
+      )}
+      <span className="dealer-vector-fallback" aria-hidden="true"><DealerFallback /></span>
     </div>
   );
 }

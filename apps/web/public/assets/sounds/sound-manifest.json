@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "format": "audio/wav",
+  "sampleRateHz": 48000,
+  "cues": {
+    "deal": "deal.wav",
+    "flip": "flip.wav",
+    "chipMove": "chip.wav",
+    "chipLand": "chip-land.wav",
+    "button": "button.wav",
+    "win": "win.wav",
+    "loss": "loss.wav",
+    "blackjack": "blackjack.wav",
+    "dealerReveal": "reveal.wav",
+    "notification": "notice.wav"
+  }
+}
