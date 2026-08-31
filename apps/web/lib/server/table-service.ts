@@ -2,7 +2,7 @@ import { z } from "zod";
 import { getD1, getRuntimeEnv } from "../../db";
 import { applyTimeout, blackjackAdapter, cancelRound, createBlackjackRoundResult, handValue, serializePrivateState, serializePublicState, type BlackjackAction, type BlackjackRules, type BlackjackState, type WalletAdjustment } from "../../packages/game-core/src";
 import type { RealtimeEnvelope, SessionUser, TableSummary } from "../../packages/contracts/src";
-import { HttpError, nowIso, randomToken, sha256, uid } from "./runtime";
+import { HttpError, nowIso, sha256, uid } from "./runtime";
 
 const createTableSchema = z.object({
   name: z.string().trim().min(2).max(40),
@@ -210,6 +210,10 @@ export async function placeBet(tableId: string, userId: string, amount: number, 
   const db = getD1();
   const wallet = await db.prepare("SELECT balance,version FROM wallets WHERE user_id=?").bind(userId).first<{ balance: number; version: number }>();
   if (!wallet || wallet.balance + delta < 0) throw new HttpError(409, "INSUFFICIENT_BALANCE", "There is not enough play money for that bet");
+  // Choosing the already-selected chip value is a harmless retry from the UI,
+  // not a balance mutation. Avoid writing a zero-value ledger entry or
+  // advancing the wallet version for it.
+  if (oldBet === amount) return { amount, balance: wallet.balance };
   const after = wallet.balance + delta; const at = nowIso();
   await db.batch([
     db.prepare("INSERT INTO wallet_mutation_locks (user_id,from_version,idempotency_key,created_at) VALUES (?,?,?,?)").bind(userId, wallet.version, idempotencyKey, at),
@@ -264,7 +268,19 @@ export async function markReady(tableId: string, userId: string, ready: boolean,
   if (table.status === "in_round") throw new HttpError(409, "ROUND_IN_PROGRESS", "The current round is already underway");
   if (ready && !member.pending_bet) throw new HttpError(409, "BET_REQUIRED", "Place a bet before marking ready");
   await getD1().prepare("UPDATE table_memberships SET ready=?,last_seen_at=? WHERE table_id=? AND user_id=?").bind(ready ? 1 : 0, nowIso(), tableId, userId).run();
-  const started = ready ? await maybeStartRound(tableId, idempotencyKey) : null;
+  let started = null;
+  if (ready) {
+    try { started = await maybeStartRound(tableId, idempotencyKey); }
+    catch (error) {
+      // Two last-ready requests may both observe the complete ready set. One
+      // transaction starts the round; the losing transition should converge on
+      // that authoritative result instead of showing a false error to a player.
+      if (!(error instanceof HttpError) || error.code !== "STALE_STATE") throw error;
+      const latest = await loadTable(tableId);
+      if (latest.status !== "in_round" || !latest.current_round_id) throw error;
+      started = { roundId: latest.current_round_id, stateVersion: latest.state_version, phase: latest.game_state_json ? (JSON.parse(latest.game_state_json) as BlackjackState).phase : "player_turns" };
+    }
+  }
   return { ready, roundStarted: Boolean(started), ...started };
 }
 

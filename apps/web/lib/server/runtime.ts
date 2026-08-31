@@ -49,6 +49,30 @@ export async function sha256(value: string): Promise<string> {
   return base64Url(new Uint8Array(digest));
 }
 
+function sessionSecret(): string {
+  const runtime = getRuntimeEnv();
+  if (runtime.SESSION_SECRET) {
+    if (runtime.SESSION_SECRET.length < 32) throw new Error("SESSION_SECRET must contain at least 32 characters");
+    return runtime.SESSION_SECRET;
+  }
+  const origin = runtime.APP_ORIGIN ?? "";
+  if (!origin || /^http:\/\/(?:localhost|127\.0\.0\.1)(?::\d+)?$/i.test(origin)) return "low-stakes-local-session-secret-do-not-deploy";
+  throw new Error("SESSION_SECRET is required outside local development");
+}
+
+async function privateHash(value: string): Promise<string> {
+  const key = await globalThis.crypto.subtle.importKey("raw", new TextEncoder().encode(sessionSecret()), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const digest = await globalThis.crypto.subtle.sign("HMAC", key, new TextEncoder().encode(value));
+  return base64Url(new Uint8Array(digest));
+}
+
+async function constantTimeEqual(left: string, right: string): Promise<boolean> {
+  const [leftDigest, rightDigest] = await Promise.all([sha256(left), sha256(right)]);
+  let difference = left.length ^ right.length;
+  for (let index = 0; index < leftDigest.length; index += 1) difference |= leftDigest.charCodeAt(index) ^ rightDigest.charCodeAt(index);
+  return difference === 0;
+}
+
 export function validateOrigin(request: Request, allowBot = false): void {
   if (allowBot && request.headers.has("authorization")) return;
   if (["GET", "HEAD", "OPTIONS"].includes(request.method)) return;
@@ -67,7 +91,7 @@ export interface AuthSession {
 export async function getSession(request: Request): Promise<AuthSession | null> {
   const token = parseCookies(request).ls_session;
   if (!token) return null;
-  const tokenHash = await sha256(token);
+  const tokenHash = await privateHash(token);
   const db = getD1();
   const row = await db.prepare(`
     SELECT s.id AS session_id, s.csrf_token_hash, s.expires_at, s.revoked_at,
@@ -101,7 +125,7 @@ export async function requireSession(request: Request): Promise<AuthSession> {
 export async function requireCsrf(request: Request, session: AuthSession): Promise<void> {
   if (["GET", "HEAD", "OPTIONS"].includes(request.method)) return;
   const token = request.headers.get("x-csrf-token");
-  if (!token || await sha256(token) !== session.csrfTokenHash) throw new HttpError(403, "CSRF_REJECTED", "Security token is missing or invalid");
+  if (!token || await privateHash(token) !== session.csrfTokenHash) throw new HttpError(403, "CSRF_REJECTED", "Security token is missing or invalid");
 }
 
 export async function createSession(request: Request, userId: string): Promise<{ cookies: string[]; csrfToken: string }> {
@@ -109,7 +133,7 @@ export async function createSession(request: Request, userId: string): Promise<{
   const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
   const ip = request.headers.get("cf-connecting-ip") ?? request.headers.get("x-forwarded-for") ?? "local";
   await db.prepare(`INSERT INTO sessions (id,user_id,token_hash,csrf_token_hash,expires_at,ip_hash,user_agent,created_at,last_seen_at) VALUES (?,?,?,?,?,?,?,?,?)`)
-    .bind(uid("ses"), userId, await sha256(token), await sha256(csrfToken), expiresAt, await sha256(ip), (request.headers.get("user-agent") ?? "").slice(0, 300), createdAt, createdAt).run();
+    .bind(uid("ses"), userId, await privateHash(token), await privateHash(csrfToken), expiresAt, await privateHash(ip), (request.headers.get("user-agent") ?? "").slice(0, 300), createdAt, createdAt).run();
   const secure = new URL(request.url).protocol === "https:" ? "; Secure" : "";
   return { csrfToken, cookies: [
     `ls_session=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000${secure}`,
@@ -163,5 +187,5 @@ export async function requireAdmin(session: AuthSession): Promise<void> {
 export async function requireBot(request: Request): Promise<void> {
   const expected = getRuntimeEnv().DISCORD_BOT_API_SECRET;
   const supplied = request.headers.get("authorization")?.replace(/^Bearer\s+/i, "");
-  if (!expected || !supplied || supplied !== expected) throw new HttpError(401, "BOT_AUTH_REQUIRED", "Bot authentication failed");
+  if (!expected || !supplied || !await constantTimeEqual(supplied, expected)) throw new HttpError(401, "BOT_AUTH_REQUIRED", "Bot authentication failed");
 }

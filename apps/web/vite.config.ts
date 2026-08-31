@@ -46,6 +46,7 @@ export default defineConfig(async () => {
 
   return {
     css: { postcss: { plugins: [tailwindcss()] } },
+    optimizeDeps: { exclude: ['vinext/dist/shims/internal/app-prefetch-fetch-queue.js'] },
     server: isCodexSeatbeltSandbox
       ? { watch: { useFsEvents: false, usePolling: true } }
       : undefined,
