@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "registrationPoint": {
+    "x": 2205,
+    "y": 304
+  },
+  "poses": {
+    "idle": "idle.png",
+    "welcome": "welcome.png",
+    "deal": "deal.png",
+    "waiting": "waiting.png",
+    "reveal": "reveal.png",
+    "dealerWin": "dealer-win.png",
+    "playerWin": "player-win.png",
+    "blackjack": "blackjack.png",
+    "bust": "bust.png",
+    "tableEvent": "table-event.png"
+  }
+}

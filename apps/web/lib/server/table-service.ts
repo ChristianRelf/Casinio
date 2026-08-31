@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { getD1, getRuntimeEnv } from "../../db";
-import { applyTimeout, blackjackAdapter, createBlackjackRoundResult, handValue, serializePrivateState, serializePublicState, type BlackjackAction, type BlackjackRules, type BlackjackState, type WalletAdjustment } from "../../packages/game-core/src";
+import { applyTimeout, blackjackAdapter, cancelRound, createBlackjackRoundResult, handValue, serializePrivateState, serializePublicState, type BlackjackAction, type BlackjackRules, type BlackjackState, type WalletAdjustment } from "../../packages/game-core/src";
 import type { RealtimeEnvelope, SessionUser, TableSummary } from "../../packages/contracts/src";
 import { HttpError, nowIso, randomToken, sha256, uid } from "./runtime";
 
@@ -54,7 +54,7 @@ async function walletStatements(adjustments: WalletAdjustment[], tableId: string
     let balance = wallet.balance;
     statements.push(db.prepare("INSERT INTO wallet_mutation_locks (user_id,from_version,idempotency_key,created_at) VALUES (?,?,?,?)").bind(userId, wallet.version, idempotencyKey, nowIso()));
     for (let index = 0; index < userAdjustments.length; index += 1) {
-      const adjustment = userAdjustments[index]; const before = balance; balance += adjustment.amount;
+      const adjustment = userAdjustments[index]; const before = balance; balance = Math.round((balance + adjustment.amount + Number.EPSILON) * 100) / 100;
       if (balance < 0) throw new HttpError(409, "INSUFFICIENT_BALANCE", "There is not enough play money for that action");
       statements.push(db.prepare(`INSERT INTO wallet_ledger (id,user_id,table_id,round_id,amount,reason,balance_before,balance_after,idempotency_key,metadata_json,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)`)
         .bind(uid("led"), userId, tableId, roundId, adjustment.amount, adjustment.reason, before, balance, `${idempotencyKey}:${userId}:${index}`, JSON.stringify({ handId: adjustment.handId ?? null }), nowIso()));
@@ -91,10 +91,10 @@ function settlementStatements(tableId: string, state: BlackjackState, at: string
     const blackjacks = player.hands.filter((hand) => hand.cards.length === 2 && !hand.isSplitHand && hand.status === "won" && handValue(hand.cards).blackjack).length;
     const biggest = Math.max(0, ...player.hands.map((hand) => hand.resultAmount ?? 0));
     const wagered = player.hands.reduce((sum, hand) => sum + hand.wager, 0) + player.insuranceBet;
-    statements.push(db.prepare(`UPDATE statistics SET rounds_played=rounds_played+1,hands_won=hands_won+?,hands_lost=hands_lost+?,hands_pushed=hands_pushed+?,blackjacks=blackjacks+?,biggest_win=MAX(biggest_win,?),total_wagered=total_wagered+?,updated_at=? WHERE user_id=?`)
+    if (state.phase !== "cancelled") statements.push(db.prepare(`UPDATE statistics SET rounds_played=rounds_played+1,hands_won=hands_won+?,hands_lost=hands_lost+?,hands_pushed=hands_pushed+?,blackjacks=blackjacks+?,biggest_win=MAX(biggest_win,?),total_wagered=total_wagered+?,updated_at=? WHERE user_id=?`)
       .bind(won, lost, pushed, blackjacks, biggest, wagered, at, player.userId));
     statements.push(db.prepare("UPDATE round_participants SET ending_balance=(SELECT balance FROM wallets WHERE user_id=?),outcome=? WHERE round_id=? AND user_id=?")
-      .bind(player.userId, won > lost ? "win" : lost > won ? "loss" : "push", state.roundId, player.userId));
+      .bind(player.userId, state.phase === "cancelled" ? "cancelled" : won > lost ? "win" : lost > won ? "loss" : "push", state.roundId, player.userId));
     player.hands.forEach((hand, index) => {
       statements.push(db.prepare("INSERT INTO hands (id,round_id,user_id,seat_number,hand_index,wager,status,total,is_dealer,created_at) VALUES (?,?,?,?,?,?,?,?,0,?)")
         .bind(hand.id, state.roundId, player.userId, player.seat, index, hand.wager, hand.status, handValue(hand.cards).total, at));
@@ -132,7 +132,7 @@ export async function listTables(userId: string): Promise<TableSummary[]> {
     FROM tables t JOIN users u ON u.id=t.owner_user_id
     LEFT JOIN table_memberships tm ON tm.table_id=t.id AND tm.user_id=? AND tm.connection_status!='left'
     LEFT JOIN seats s ON s.table_id=t.id
-    WHERE t.status!='closed' AND (t.visibility!='private' OR tm.user_id IS NOT NULL)
+    WHERE t.status!='closed' AND (t.visibility='public' OR tm.user_id IS NOT NULL)
     GROUP BY t.id ORDER BY t.updated_at DESC LIMIT 50
   `).bind(userId).all<Record<string, string | number>>();
   return rows.results.map((row) => ({ id: String(row.id), name: String(row.name), gameType: String(row.game_type), status: String(row.status), visibility: String(row.visibility), maxSeats: Number(row.max_seats), seatedCount: Number(row.seated_count), spectatorCount: Number(row.spectator_count), minBet: Number(row.min_bet), maxBet: Number(row.max_bet), ownerDisplayName: String(row.owner_display_name), updatedAt: String(row.updated_at) }));
@@ -147,10 +147,12 @@ export async function validateInvite(codeRaw: string) {
 
 export async function joinWithInvite(userId: string, code: string) {
   const invite = await validateInvite(code); const db = getD1(); const at = nowIso(); const hash = await sha256(code.toUpperCase().trim());
-  await db.batch([
+  const existing = await db.prepare("SELECT 1 AS joined FROM table_memberships WHERE table_id=? AND user_id=?").bind(invite.tableId, userId).first();
+  const statements: D1PreparedStatement[] = [
     db.prepare(`INSERT INTO table_memberships (table_id,user_id,role,connection_status,ready,joined_at,last_seen_at) VALUES (?,?,'spectator','connected',0,?,?) ON CONFLICT(table_id,user_id) DO UPDATE SET connection_status='connected',role=CASE WHEN table_memberships.role='owner' THEN 'owner' ELSE 'spectator' END,left_at=NULL,last_seen_at=excluded.last_seen_at`).bind(invite.tableId, userId, at, at),
-    db.prepare("UPDATE invite_codes SET use_count=use_count+1 WHERE code_hash=?").bind(hash),
-  ]);
+  ];
+  if (!existing) statements.push(db.prepare("UPDATE invite_codes SET use_count=use_count+1 WHERE code_hash=?").bind(hash));
+  await db.batch(statements);
   return invite;
 }
 
@@ -224,7 +226,12 @@ async function maybeStartRound(tableId: string, idempotencyKey: string) {
   if (!seated.results.length || seated.results.some((row) => !row.ready || !row.pending_bet)) return null;
   const rules = JSON.parse(table.rules_json) as Partial<BlackjackRules>; const roundId = uid("rnd");
   const result = createBlackjackRoundResult({ roundId, participants: seated.results.map((row) => ({ userId: String(row.user_id), seat: Number(row.seat_number), displayName: String(row.display_name), bet: Number(row.pending_bet) })), rules });
-  const state = result.state; const isFinal = state.phase === "settled" || state.phase === "cancelled";
+  const state = result.state;
+  // Engine versions are local to a new state object; table versions must never
+  // reset between rounds because clients and transition locks use them as a
+  // single monotonic stream.
+  state.stateVersion = table.state_version + 1;
+  const isFinal = state.phase === "settled" || state.phase === "cancelled";
   const sequenceRow = await getD1().prepare("SELECT COALESCE(MAX(sequence),0)+1 AS sequence FROM game_rounds WHERE table_id=?").bind(tableId).first<{ sequence: number }>();
   const db = getD1(); const at = nowIso(); const publicState = serializePublicState(state); const statements: D1PreparedStatement[] = [
     db.prepare("INSERT INTO state_transition_locks (table_id,from_version,idempotency_key,created_at) VALUES (?,?,?,?)").bind(tableId, table.state_version, idempotencyKey, at),
@@ -266,9 +273,10 @@ async function persistEngineResult(
   result: ReturnType<typeof applyTimeout>,
   idempotencyKey: string,
   actionRecord?: { userId: string; action: BlackjackAction; expectedVersion: number },
+  transitionLockVersion = table.state_version,
 ) {
   const db = getD1(); const state = result.state; const at = nowIso();
-  const statements: D1PreparedStatement[] = [db.prepare("INSERT INTO state_transition_locks (table_id,from_version,idempotency_key,created_at) VALUES (?,?,?,?)").bind(table.id, table.state_version, idempotencyKey, at)];
+  const statements: D1PreparedStatement[] = [db.prepare("INSERT INTO state_transition_locks (table_id,from_version,idempotency_key,created_at) VALUES (?,?,?,?)").bind(table.id, transitionLockVersion, idempotencyKey, at)];
   statements.push(...await walletStatements(result.walletAdjustments, table.id, state.roundId, idempotencyKey));
   statements.push(db.prepare("UPDATE tables SET status=?,game_state_json=?,state_version=?,last_event_at=?,updated_at=? WHERE id=? AND state_version=?")
     .bind(state.phase === "settled" || state.phase === "cancelled" ? "open" : "in_round", JSON.stringify(state), state.stateVersion, at, at, table.id, table.state_version));
@@ -310,7 +318,23 @@ async function recoverIfNeeded(table: TableRow) {
   const state = JSON.parse(table.game_state_json) as BlackjackState;
   if (!state.actionDeadlineAt || new Date(state.actionDeadlineAt) > new Date()) return table;
   const result = blackjackAdapter.recoverState(state, new Date());
-  if (result.state.stateVersion !== state.stateVersion) await persistEngineResult(table, result, `timeout:${table.id}:${state.stateVersion}`);
+  if (result.state.stateVersion !== state.stateVersion) {
+    try { await persistEngineResult(table, result, `timeout:${table.id}:${state.stateVersion}`); }
+    catch (error) {
+      if (!(error instanceof HttpError) || error.code !== "STALE_STATE") throw error;
+      const latest = await loadTable(table.id);
+      if (latest.state_version !== table.state_version || latest.status !== "in_round" || !latest.game_state_json) return latest;
+      // A lock with an unchanged row means a legacy/regressed version or an
+      // interrupted transition made safe continuation impossible. Cancel and
+      // refund the complete committed wager instead of guessing card state.
+      const lock = await getD1().prepare("SELECT COALESCE(MAX(from_version),?) AS version FROM state_transition_locks WHERE table_id=?").bind(latest.state_version, latest.id).first<{ version: number }>();
+      const recoveryLockVersion = Math.max(latest.state_version, lock?.version ?? latest.state_version) + 1;
+      const cancelled = cancelRound(JSON.parse(latest.game_state_json) as BlackjackState, new Date());
+      cancelled.state.stateVersion = recoveryLockVersion + 1;
+      try { await persistEngineResult(latest, cancelled, `recovery:${latest.id}:${recoveryLockVersion}`, undefined, recoveryLockVersion); }
+      catch (recoveryError) { if (!(recoveryError instanceof HttpError) || recoveryError.code !== "STALE_STATE") throw recoveryError; }
+    }
+  }
   return loadTable(table.id);
 }
 
@@ -353,8 +377,24 @@ export async function addChat(tableId: string, userId: string, raw: { kind?: str
 export async function updateTableConfig(tableId: string, userId: string, raw: unknown) {
   const table = await loadTable(tableId); if (table.owner_user_id !== userId) throw new HttpError(403, "OWNER_REQUIRED", "Only the table owner can change the table");
   if (table.status === "in_round") throw new HttpError(409, "ROUND_IN_PROGRESS", "Change rules between rounds");
-  const schema = z.object({ name: z.string().trim().min(2).max(40).optional(), visibility: z.enum(["private", "friends", "public"]).optional(), dealerMode: z.enum(["automated", "player"]).optional(), dealerUserId: z.string().nullable().optional(), rules: z.record(z.string(), z.unknown()).optional() });
+  const schema = z.object({
+    name: z.string().trim().min(2).max(40).optional(),
+    visibility: z.enum(["private", "friends", "public"]).optional(),
+    dealerMode: z.enum(["automated", "player"]).optional(),
+    dealerUserId: z.string().nullable().optional(),
+    rules: z.object({
+      deckCount: z.number().int().min(1).max(8).optional(),
+      blackjackPayout: z.number().min(1).max(2).optional(),
+      dealerHitsSoft17: z.boolean().optional(),
+      allowSurrender: z.boolean().optional(),
+      maxSplits: z.number().int().min(0).max(4).optional(),
+      hitSplitAces: z.boolean().optional(),
+      doubleAfterSplit: z.boolean().optional(),
+      turnSeconds: z.number().int().min(10).max(90).optional(),
+    }).strict().optional(),
+  }).strict();
   const input = schema.parse(raw); const nextRules = { ...JSON.parse(table.rules_json), ...(input.rules ?? {}) };
+  if (input.dealerMode === "player") throw new HttpError(409, "PLAYER_DEALER_NOT_ENABLED", "Player-controlled dealer mode is reserved by the API but is not enabled in this release");
   await getD1().prepare("UPDATE tables SET name=?,visibility=?,dealer_mode=?,dealer_user_id=?,rules_json=?,updated_at=? WHERE id=?")
     .bind(input.name ? cleanText(input.name, 40) : table.name, input.visibility ?? table.visibility, input.dealerMode ?? table.dealer_mode, input.dealerUserId === undefined ? table.dealer_user_id : input.dealerUserId, JSON.stringify(nextRules), nowIso(), tableId).run();
   return { updated: true };
@@ -390,9 +430,23 @@ export async function adminAdjustWallet(actorUserId: string, targetUserId: strin
   const reason = cleanText(raw.reason, 200); if (reason.length < 3) throw new HttpError(400, "REASON_REQUIRED", "An audit reason is required");
   const amount = Number(raw.amount ?? 0); let after: number;
   if (raw.operation === "grant") after = wallet.balance + Math.abs(amount); else if (raw.operation === "remove") after = Math.max(0, wallet.balance - Math.abs(amount)); else if (raw.operation === "reset") after = Number(getRuntimeEnv().STARTING_BALANCE ?? 10_000); else throw new HttpError(400, "INVALID_OPERATION", "Operation must be grant, remove, or reset");
-  if (!Number.isSafeInteger(after) || after < 0 || after > 1_000_000_000) throw new HttpError(400, "INVALID_AMOUNT", "Adjustment amount is invalid");
+  if (!Number.isFinite(after) || after < 0 || after > 1_000_000_000) throw new HttpError(400, "INVALID_AMOUNT", "Adjustment amount is invalid");
   const delta = after - wallet.balance; const at = nowIso();
   await db.batch([db.prepare("INSERT INTO wallet_mutation_locks (user_id,from_version,idempotency_key,created_at) VALUES (?,?,?,?)").bind(targetUserId, wallet.version, idempotencyKey, at), db.prepare("UPDATE wallets SET balance=?,version=version+1,updated_at=? WHERE user_id=? AND version=?").bind(after, at, targetUserId, wallet.version), db.prepare("INSERT INTO wallet_ledger (id,user_id,amount,reason,balance_before,balance_after,idempotency_key,metadata_json,created_at) VALUES (?,?,?,?,?,?,?,?,?)").bind(uid("led"), targetUserId, delta, `ADMIN_${raw.operation.toUpperCase()}`, wallet.balance, after, idempotencyKey, JSON.stringify({ actorUserId, reason }), at), db.prepare("INSERT INTO admin_audit_logs (id,actor_user_id,target_user_id,action,before_json,after_json,reason,created_at) VALUES (?,?,?,?,?,?,?,?)").bind(uid("aud"), actorUserId, targetUserId, `wallet.${raw.operation}`, JSON.stringify({ balance: wallet.balance }), JSON.stringify({ balance: after }), reason, at)]); return { userId: targetUserId, balance: after, delta };
+}
+
+export async function adminSetUserStatus(actorUserId: string, targetUserId: string, raw: { status: "active" | "suspended"; reason: string }) {
+  if (actorUserId === targetUserId && raw.status === "suspended") throw new HttpError(409, "SELF_SUSPEND_REJECTED", "Use another administrator to suspend this account");
+  const reason = cleanText(raw.reason, 200); if (reason.length < 3) throw new HttpError(400, "REASON_REQUIRED", "An audit reason is required");
+  const db = getD1(); const user = await db.prepare("SELECT status FROM users WHERE id=?").bind(targetUserId).first<{ status: string }>();
+  if (!user) throw new HttpError(404, "USER_NOT_FOUND", "User not found");
+  const at = nowIso(); const statements: D1PreparedStatement[] = [
+    db.prepare("UPDATE users SET status=?,updated_at=? WHERE id=?").bind(raw.status, at, targetUserId),
+    db.prepare("INSERT INTO admin_audit_logs (id,actor_user_id,target_user_id,action,before_json,after_json,reason,created_at) VALUES (?,?,?,?,?,?,?,?)")
+      .bind(uid("aud"), actorUserId, targetUserId, "account.status", JSON.stringify({ status: user.status }), JSON.stringify({ status: raw.status }), reason, at),
+  ];
+  if (raw.status === "suspended") statements.push(db.prepare("UPDATE sessions SET revoked_at=? WHERE user_id=? AND revoked_at IS NULL").bind(at, targetUserId));
+  await db.batch(statements); return { userId: targetUserId, status: raw.status };
 }
 
 export async function leaderboard() {

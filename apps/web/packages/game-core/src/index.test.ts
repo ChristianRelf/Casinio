@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { allowedActions, applyBlackjackAction, applyTimeout, blackjackAdapter, createBlackjackRound, createOrderedShoe, createShoe, handValue, serializePublicState, type Card, type Suit } from "./index";
+import { allowedActions, applyBlackjackAction, applyTimeout, blackjackAdapter, createBlackjackRound, createBlackjackRoundResult, createOrderedShoe, createShoe, handValue, serializePublicState, type Card, type Suit } from "./index";
 
 const c = (rank: Card["rank"], suit: Suit = "spade") => ({ rank, suit });
 const participants = [{ userId: "u1", seat: 1, displayName: "Chris", bet: 100 }];
@@ -17,9 +17,17 @@ describe("blackjack totals", () => {
 
 describe("round flow", () => {
   it("pays a natural blackjack at configured odds", () => {
-    const state = round([c("A"), c("9", "heart"), c("K", "club"), c("7", "diamond"), c("10")]);
+    const shoe = createOrderedShoe([c("A"), c("9", "heart"), c("K", "club"), c("7", "diamond"), c("10")]);
+    const result = createBlackjackRoundResult({ participants, shoe, now: new Date("2026-01-01T00:00:00Z") });
+    const state = result.state;
     expect(state.phase).toBe("settled");
     expect(state.players[0].hands[0]).toMatchObject({ status: "won", resultAmount: 150 });
+    expect(result.walletAdjustments).toContainEqual(expect.objectContaining({ reason: "PAYOUT", amount: 250 }));
+  });
+  it("preserves half-chip blackjack payouts without floating-point drift", () => {
+    const result = createBlackjackRoundResult({ participants: [{ ...participants[0], bet: 25 }], shoe: createOrderedShoe([c("A"), c("9"), c("K"), c("7"), c("10")]) });
+    expect(result.walletAdjustments).toContainEqual(expect.objectContaining({ reason: "PAYOUT", amount: 62.5 }));
+    expect(result.state.players[0].hands[0].resultAmount).toBe(37.5);
   });
   it("handles dealer blackjack and insurance", () => {
     let state = round([c("10"), c("A", "heart"), c("9", "club"), c("K", "diamond")]);

@@ -272,3 +272,17 @@ export const chatMessages = sqliteTable("chat_messages", {
   body: text("body").notNull(),
   createdAt: text("created_at").notNull(),
 }, (table) => [index("idx_chat_messages_table_created").on(table.tableId, table.createdAt)]);
+
+export const discordTableLinks = sqliteTable("discord_table_links", {
+  tableId: text("table_id").primaryKey().references(() => tables.id, { onDelete: "cascade" }),
+  guildId: text("guild_id").notNull(),
+  channelId: text("channel_id").notNull(),
+  messageId: text("message_id"),
+  createdByDiscordUserId: text("created_by_discord_user_id").notNull(),
+  lastAnnouncedVersion: integer("last_announced_version").notNull().default(0),
+  lastStatus: text("last_status").notNull().default("open"),
+  lastRoundId: text("last_round_id"),
+  lastSeatedCount: integer("last_seated_count").notNull().default(0),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+}, (table) => [index("idx_discord_table_links_channel").on(table.guildId, table.channelId)]);

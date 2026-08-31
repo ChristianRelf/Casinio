@@ -199,6 +199,7 @@ function deadline(rules: BlackjackRules, now: Date): string {
 }
 
 function isTenValue(card: Card): boolean { return cardNumericValue(card.rank) === 10; }
+const currency = (amount: number) => Math.round((amount + Number.EPSILON) * 100) / 100;
 
 function isNatural(hand: BlackjackHand): boolean {
   return !hand.isSplitHand && handValue(hand.cards).blackjack;
@@ -440,22 +441,22 @@ export function settle(stateInput: BlackjackState, now = new Date()): ActionResu
   const dealerNatural = dealerValue.blackjack;
   for (const player of state.players) {
     if (player.insuranceBet > 0 && dealerNatural) {
-      const payout = player.insuranceBet * 3;
+      const payout = currency(player.insuranceBet * 3);
       walletAdjustments.push({ userId: player.userId, amount: payout, reason: "INSURANCE_PAYOUT" });
       events.push(event("insurance.won", { amount: payout }, player.userId, now));
     }
     for (const hand of player.hands) {
       const playerValue = handValue(hand.cards);
       let payout = 0;
-      if (hand.status === "surrendered") { payout = hand.wager / 2; hand.status = "lost"; }
+      if (hand.status === "surrendered") { payout = currency(hand.wager / 2); hand.status = "lost"; }
       else if (playerValue.busted) hand.status = "lost";
       else if (dealerNatural && isNatural(hand)) { payout = hand.wager; hand.status = "push"; }
       else if (dealerNatural) hand.status = "lost";
-      else if (isNatural(hand)) { payout = hand.wager + hand.wager * state.rules.blackjackPayout; hand.status = "won"; }
-      else if (dealerValue.busted || playerValue.total > dealerValue.total) { payout = hand.wager * 2; hand.status = "won"; }
+      else if (isNatural(hand)) { payout = currency(hand.wager + hand.wager * state.rules.blackjackPayout); hand.status = "won"; }
+      else if (dealerValue.busted || playerValue.total > dealerValue.total) { payout = currency(hand.wager * 2); hand.status = "won"; }
       else if (playerValue.total === dealerValue.total) { payout = hand.wager; hand.status = "push"; }
       else hand.status = "lost";
-      hand.resultAmount = payout - hand.wager;
+      hand.resultAmount = currency(payout - hand.wager);
       if (payout > 0) walletAdjustments.push({ userId: player.userId, amount: payout, reason: "PAYOUT", handId: hand.id });
       events.push(event("hand.settled", { handId: hand.id, status: hand.status, wager: hand.wager, payout, net: hand.resultAmount }, player.userId, now));
     }
