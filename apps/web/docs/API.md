@@ -62,7 +62,8 @@ Errors are stable, machine-readable responses:
 | `GET` | `/tables/:id/history` | Up to 50 rounds |
 | `POST` | `/tables/:id/seat` | Take a numbered seat |
 | `POST` | `/tables/:id/release-seat` | Release a seat between rounds |
-| `POST` | `/tables/:id/leave` | Leave, or mark disconnected while a round safely retains the seat |
+| `POST` | `/tables/:id/reconnect` | Cancel a scheduled departure and restore connected presence |
+| `POST` | `/tables/:id/leave` | Leave now, or schedule seat release immediately after the active round |
 | `POST` | `/tables/:id/bet` | Place or change the next-round bet |
 | `POST` | `/tables/:id/ready` | Change ready state; the final ready player starts the round |
 | `POST` | `/tables/:id/action` | Submit one authoritative game action |
@@ -90,6 +91,10 @@ Idempotency-Key: 663b1bea-30f5-4d10-a309-3f1c8c7cc36a
   "blackjackPayout": 1.5,
   "dealerHitsSoft17": false,
   "allowSurrender": true,
+  "maxSplits": 3,
+  "hitSplitAces": false,
+  "doubleAfterSplit": true,
+  "turnSeconds": 25,
   "visibility": "private"
 }
 ```
@@ -104,6 +109,29 @@ Action example:
 ```
 
 Action types are `hit`, `stand`, `double`, `split`, `surrender`, `insurance`, and `decline_insurance`. The server derives allowed actions from authoritative state and wallet balance. Extra card, total, payout, shoe, actor, or balance fields are ignored by schema validation or rejected.
+
+Host configuration uses the table version as a compare-and-set guard:
+
+```json
+{
+  "expectedVersion": 14,
+  "name": "Friday table",
+  "minBet": 25,
+  "maxBet": 500,
+  "rules": {
+    "deckCount": 6,
+    "blackjackPayout": 1.5,
+    "dealerHitsSoft17": false,
+    "allowSurrender": true,
+    "maxSplits": 3,
+    "hitSplitAces": false,
+    "doubleAfterSplit": true,
+    "turnSeconds": 25
+  }
+}
+```
+
+Configuration is accepted only between rounds and before any player has placed a pending bet or marked ready. A successful change advances the monotonic table version and emits `table.configured`. Competing edits return `STALE_STATE`; committed choices return `TABLE_CONFIGURATION_LOCKED`.
 
 Configuration reserves future dealer ownership but does not pretend it is available:
 
@@ -173,7 +201,7 @@ Accept: text/event-stream
 Cookie: ls_session=...
 ```
 
-The server verifies membership before opening the stream. It emits `table-event` records and heartbeats, then closes periodically so browsers reconnect cleanly with `Last-Event-ID` or the latest `since` value.
+The server verifies membership before opening the stream. It emits `table-event` records and heartbeats, refreshes presence at a bounded interval, then closes periodically so browsers reconnect cleanly with `Last-Event-ID` or the latest `since` value. A member with no snapshot or stream activity for 30 seconds is shown as disconnected without losing a held seat. Returning through the table route explicitly reconnects them.
 
 ```text
 id: 15
@@ -239,6 +267,6 @@ Bot routes live under `/api/v1/bot` and require the shared bearer secret.
 - `AUTH_REQUIRED`, `AGE_CONFIRMATION_REQUIRED`, `ADMIN_REQUIRED`, `BOT_AUTH_REQUIRED`
 - `INVALID_ORIGIN`, `CSRF_REJECTED`, `IDEMPOTENCY_REQUIRED`, `IDEMPOTENCY_CONFLICT`
 - `TABLE_ACCESS_DENIED`, `OWNER_REQUIRED`, `SEAT_REQUIRED`, `SEAT_UNAVAILABLE`
-- `ROUND_IN_PROGRESS`, `NO_ACTIVE_ROUND`, `STALE_STATE`, `ACTION_REJECTED`
+- `ROUND_IN_PROGRESS`, `NO_ACTIVE_ROUND`, `STALE_STATE`, `ACTION_REJECTED`, `TABLE_CONFIGURATION_LOCKED`
 - `BET_OUTSIDE_LIMITS`, `INSUFFICIENT_BALANCE`, `REFILL_NOT_READY`
 - `PLAYER_DEALER_NOT_ENABLED`, `RATE_LIMITED`, `VALIDATION_ERROR`

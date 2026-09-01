@@ -5,7 +5,7 @@ import { env as workerEnv } from "cloudflare:workers";
 import { createBlackjackRound, createOrderedShoe, type Card, type Suit } from "../packages/game-core/src";
 import type { SessionUser } from "../packages/contracts/src";
 import { createSession, getSession, HttpError, requireCsrf, requireIdempotency, saveIdempotentResult, validateOrigin } from "../lib/server/runtime";
-import { createTable, getEvents, getTableState, joinWithInvite, leaveTable, listTables, markReady, placeBet, submitAction, takeSeat } from "../lib/server/table-service";
+import { createTable, getEvents, getTableState, joinWithInvite, leaveTable, listTables, markReady, placeBet, reconnectTable, submitAction, takeSeat, updateTableConfig } from "../lib/server/table-service";
 import { TestD1Database } from "./d1-test-db";
 
 const c = (rank: Card["rank"], suit: Suit = "spade") => ({ rank, suit });
@@ -24,7 +24,7 @@ async function seedUser(value: SessionUser, balance = 1_000) {
 }
 
 async function installSchema() {
-  for (const filename of ["0000_material_chamber.sql", "0001_past_mandroid.sql", "0002_motionless_madelyne_pryor.sql", "0003_medical_hellcat.sql"]) {
+  for (const filename of ["0000_material_chamber.sql", "0001_past_mandroid.sql", "0002_motionless_madelyne_pryor.sql", "0003_medical_hellcat.sql", "0004_fixed_namora.sql"]) {
     await database.exec(readFileSync(join(process.cwd(), "drizzle", filename), "utf8").replaceAll("--> statement-breakpoint", ""));
   }
   await database.exec("PRAGMA foreign_keys = ON");
@@ -135,6 +135,7 @@ describe("durable multiplayer table service", () => {
     const first = await submitAction(setup.tableId, chris.id, { type: "stand" }, setup.state.stateVersion, "action-chris-0001");
     await expect(submitAction(setup.tableId, maya.id, { type: "stand" }, setup.state.stateVersion, "action-maya-stale")).rejects.toMatchObject({ code: "STALE_STATE" });
     expect(await leaveTable(setup.tableId, maya.id)).toEqual({ left: false, seatHeldUntilRoundEnd: true });
+    await reconnectTable(setup.tableId, maya.id);
     const reconnected = await getTableState(setup.tableId, maya.id);
     expect(reconnected.people.find(person => person.userId === maya.id)).toMatchObject({ connectionStatus: "connected", seatNumber: 2 });
     expect(reconnected.privateState?.allowedActions).toContain("stand");
@@ -152,6 +153,54 @@ describe("durable multiplayer table service", () => {
     expect(events.length).toBeGreaterThan(0);
     expect(events.map(event => event.version)).toEqual([...events.map(event => event.version)].sort((a, b) => a - b));
     expect(JSON.stringify(events)).not.toContain("shoePosition");
+  });
+
+  it("lets only the host change unlocked rules and broadcasts one versioned configuration event", async () => {
+    const chris = user("u1", "Chris"); const maya = user("u2", "Maya");
+    await seedUser(chris); await seedUser(maya);
+    const created = await createTable(chris, { name: "Quiet table", maxSeats: 5, minBet: 25, maxBet: 500, deckCount: 6, visibility: "private" });
+    await joinWithInvite(maya.id, created.inviteCode);
+    await expect(updateTableConfig(created.tableId, maya.id, { name: "Not Maya's table" })).rejects.toMatchObject({ code: "OWNER_REQUIRED" });
+
+    const saved = await updateTableConfig(created.tableId, chris.id, {
+      expectedVersion: 0,
+      name: "Strictly casual",
+      minBet: 50,
+      maxBet: 750,
+      rules: { deckCount: 2, blackjackPayout: 1.2, dealerHitsSoft17: true, allowSurrender: false, maxSplits: 2, hitSplitAces: true, doubleAfterSplit: false, turnSeconds: 40 },
+    });
+    expect(saved).toMatchObject({ updated: true, stateVersion: 1 });
+    const state = await getTableState(created.tableId, chris.id);
+    expect(state.table).toMatchObject({ name: "Strictly casual", minBet: 50, maxBet: 750, stateVersion: 1 });
+    expect(state.table.rules).toMatchObject({ deckCount: 2, minBet: 50, maxBet: 750, blackjackPayout: 1.2, dealerHitsSoft17: true, allowSurrender: false, maxSplits: 2, hitSplitAces: true, doubleAfterSplit: false, turnSeconds: 40 });
+    const events = await getEvents(created.tableId, maya.id, 0);
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ version: 1, tableId: created.tableId, roundId: null, type: "table.configured" });
+
+    await takeSeat(created.tableId, chris.id, 4);
+    await placeBet(created.tableId, chris.id, 50, "config-lock-bet");
+    await expect(updateTableConfig(created.tableId, chris.id, { expectedVersion: 1, rules: { turnSeconds: 60 } })).rejects.toMatchObject({ code: "TABLE_CONFIGURATION_LOCKED" });
+  });
+
+  it("marks stale friends disconnected, reconnects them explicitly, and releases scheduled leavers after settlement", async () => {
+    const chris = user("u1", "Chris"); const maya = user("u2", "Maya");
+    await seedUser(chris); await seedUser(maya);
+    const created = await createTable(chris, { name: "Presence table", maxSeats: 3, minBet: 25, maxBet: 500, deckCount: 6, visibility: "private" });
+    await joinWithInvite(maya.id, created.inviteCode);
+    await takeSeat(created.tableId, maya.id, 2);
+    await database.prepare("UPDATE table_memberships SET connection_status='connected',last_seen_at='2000-01-01T00:00:00.000Z' WHERE table_id=? AND user_id=?").bind(created.tableId, maya.id).run();
+    const observed = await getTableState(created.tableId, chris.id);
+    expect(observed.people.find(person => person.userId === maya.id)).toMatchObject({ connectionStatus: "disconnected", seatNumber: 2 });
+    await reconnectTable(created.tableId, maya.id);
+    expect((await getTableState(created.tableId, maya.id)).people.find(person => person.userId === maya.id)).toMatchObject({ connectionStatus: "connected", seatNumber: 2 });
+
+    const round = await deterministicRound([chris, maya]);
+    const first = await submitAction(round.tableId, chris.id, { type: "stand" }, round.state.stateVersion, "leave-after-round-chris");
+    await leaveTable(round.tableId, maya.id);
+    expect(await database.prepare("SELECT connection_status,leave_after_round FROM table_memberships WHERE table_id=? AND user_id=?").bind(round.tableId, maya.id).first()).toMatchObject({ connection_status: "disconnected", leave_after_round: 1 });
+    expect((await submitAction(round.tableId, maya.id, { type: "stand" }, first.stateVersion, "leave-after-round-maya")).phase).toBe("settled");
+    expect(await database.prepare("SELECT role,connection_status,leave_after_round FROM table_memberships WHERE table_id=? AND user_id=?").bind(round.tableId, maya.id).first()).toMatchObject({ role: "spectator", connection_status: "left", leave_after_round: 0 });
+    expect(await database.prepare("SELECT user_id FROM seats WHERE table_id=? AND seat_number=2").bind(round.tableId).first()).toMatchObject({ user_id: null });
   });
 
   it("converges simultaneous final-ready requests on one authoritative round", async () => {

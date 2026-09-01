@@ -87,6 +87,7 @@ export const tableMemberships = sqliteTable("table_memberships", {
   role: text("role", { enum: ["owner", "player", "spectator", "dealer"] }).notNull(),
   connectionStatus: text("connection_status", { enum: ["connected", "disconnected", "left"] }).notNull(),
   ready: integer("ready", { mode: "boolean" }).notNull().default(false),
+  leaveAfterRound: integer("leave_after_round", { mode: "boolean" }).notNull().default(false),
   pendingBet: integer("pending_bet"),
   joinedAt: text("joined_at").notNull(),
   lastSeenAt: text("last_seen_at").notNull(),

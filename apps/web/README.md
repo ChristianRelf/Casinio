@@ -8,8 +8,8 @@ There are no deposits, purchases, withdrawals, transfers, prizes, crypto assets,
 
 - Discord OAuth with state, PKCE, server-side sessions, protected cookies, optional guild and user allowlists, and no browser-visible OAuth tokens
 - A companion Discord bot with `/casino`, `/table create`, `/table join`, `/table status`, `/table close`, `/balance`, `/stats`, `/leaderboard`, and `/help`
-- Private invites, one to seven seats, spectators, reconnectable membership, chat, designed text reactions, and table ownership
-- Server-authoritative blackjack with configurable decks, limits, payout, soft 17, surrender, split rules, insurance, doubles, timers, automated safe actions, recovery, and atomic settlement
+- Private invites, one to seven seats, spectators, lease-based presence, reconnectable seats, safe between-round departures, chat, designed text reactions, and table ownership
+- Server-authoritative blackjack with live host controls for decks, limits, payout, soft 17, surrender, split rules, insurance, doubles, timers, automated safe actions, recovery, and atomic settlement
 - An immutable wallet ledger, wallet/state version locks, idempotency keys, transaction rollback, daily recovery allowances, and audited administration
 - Versioned HTTP API and authenticated Server-Sent Events under `/api/v1`
 - A reusable game-adapter contract and generic table schema with reserved player-dealer fields
@@ -145,7 +145,7 @@ npm run build
 
 `npm test` covers the deterministic blackjack engine, privacy, authorization, sessions/CSRF, idempotency, database rollback, wallet consistency, Discord commands, all 52 card faces, the card back, all dealer poses, and local sound files.
 
-`npm run test:e2e` starts the local D1-backed app and drives two isolated Chromium users through sign-in, private table creation, invite join, seating, betting, a complete synchronized round, settlement, ledger checks, reload/reconnect, and the start of the next round.
+`npm run test:e2e` starts the local D1-backed app and drives two isolated Chromium users through sign-in, private table creation, host rule configuration, invite join, seating, betting, a complete synchronized round, settlement, ledger checks, reload/reconnect, and the start of the next round.
 
 ## Administration and play-money recovery
 

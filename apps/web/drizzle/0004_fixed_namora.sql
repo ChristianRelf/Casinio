@@ -1,0 +1,1 @@
+ALTER TABLE `table_memberships` ADD `leave_after_round` integer DEFAULT false NOT NULL;

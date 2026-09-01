@@ -3,7 +3,7 @@ import { expect, type Page, test } from "@playwright/test";
 type Persona = "chris" | "maya";
 type Envelope<T> = { ok: true; data: T } | { ok: false; error: { code: string; message: string } };
 type TableState = {
-  table: { id: string; stateVersion: number; status: string };
+  table: { id: string; name: string; stateVersion: number; status: string; rules: { deckCount?: number; blackjackPayout?: number; dealerHitsSoft17?: boolean; turnSeconds?: number } };
   people: Array<{ userId: string; displayName: string; seatNumber: number | null }>;
   publicState: null | {
     roundId: string;
@@ -121,6 +121,18 @@ test("two friends create, join, play, settle, reconnect, and begin the next roun
     const tableId = new URL(chris.url()).pathname.split("/").at(-1)!;
     await expect(chris.getByLabel("Blackjack table")).toBeVisible();
 
+    await chris.getByRole("button", { name: "Table rules" }).click();
+    const rulesDialog = chris.getByRole("dialog", { name: "Set the next round" });
+    await rulesDialog.getByLabel("Decks").selectOption("2");
+    await rulesDialog.getByLabel("Blackjack payout").selectOption("1.2");
+    await rulesDialog.getByLabel("Dealer hits soft 17").check();
+    await rulesDialog.getByLabel("Turn time").selectOption("40");
+    await rulesDialog.getByRole("button", { name: "Save next round" }).click();
+    await expect(rulesDialog).toBeHidden();
+    const configured = await apiGet<TableState>(chris, `tables/${tableId}`);
+    expect(configured.table.rules).toMatchObject({ deckCount: 2, blackjackPayout: 1.2, dealerHitsSoft17: true, turnSeconds: 40 });
+    await expect(chris.locator(".felt-title")).toContainText("BLACKJACK PAYS 6 TO 5");
+
     const inviteResponse = chris.waitForResponse((response) => response.request().method() === "POST" && response.url().endsWith(`/api/v1/tables/${tableId}/invites`));
     await chris.getByRole("button", { name: "Invite friends" }).click();
     const invitePayload = await (await inviteResponse).json() as Envelope<{ code: string }>;
@@ -129,6 +141,7 @@ test("two friends create, join, play, settle, reconnect, and begin the next roun
     await maya.goto(`/join/${invitePayload.data.code}`);
     await maya.getByRole("button", { name: "Join table" }).click();
     await expect(maya).toHaveURL(new RegExp(`/table/${tableId}$`));
+    await expect(maya.locator(".felt-title")).toContainText("BLACKJACK PAYS 6 TO 5");
     await maya.getByRole("button", { name: "Take seat 3" }).click();
     await expect(maya.locator(".iso-seat.seat-3")).toHaveClass(/is-me/);
     await expect(chris.locator(".iso-seat.seat-4")).toHaveClass(/is-me/);

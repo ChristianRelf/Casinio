@@ -20,7 +20,7 @@ The Discord bot uses the same API and table rows. It has no game simulation, sho
 
 ## Shared table infrastructure
 
-The `tables` row carries `game_type`, owner, visibility, dealer mode/user, seats, limits, rules, current round, serialized authoritative state, and one monotonic `state_version`. Membership, seats, spectators, invites, chat, rounds, participants, actions, events, and Discord links are game-neutral tables.
+The `tables` row carries `game_type`, owner, visibility, dealer mode/user, seats, limits, rules, current round, serialized authoritative state, and one monotonic `state_version`. Membership, seats, spectators, invites, chat, rounds, participants, actions, events, and Discord links are game-neutral tables. Membership presence is lease-like: active snapshots and streams touch `last_seen_at`, stale members become disconnected while seats remain recoverable, and an explicit mid-round departure is finalized only after settlement.
 
 Player-controlled dealer ownership is represented by `dealer_mode`, `dealer_user_id`, and the `dealer` membership role. Requests selecting that mode are rejected in this release so an incomplete feature cannot be exposed accidentally.
 

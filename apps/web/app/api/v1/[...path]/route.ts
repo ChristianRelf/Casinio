@@ -2,7 +2,7 @@ import { ZodError, z } from "zod";
 import { getD1 } from "../../../../db";
 import { developmentSignIn, finishDiscordOAuth, startDiscordOAuth } from "../../../../lib/server/oauth";
 import { HttpError, apiError, apiOk, applyCookies, enforceRateLimit, getSession, json, requireAdmin, requireBot, requireCsrf, requireIdempotency, requireSession, revokeSession, saveIdempotentResult, uid, validateOrigin } from "../../../../lib/server/runtime";
-import { addChat, adminAdjustWallet, adminSetUserStatus, closeTable, createInvite, createTable, dailyRefill, getEvents, getLedger, getTableState, getUserOverview, joinWithInvite, leaderboard, leaveTable, listTables, markReady, placeBet, releaseSeat, roundHistory, submitAction, takeSeat, updateTableConfig, validateInvite } from "../../../../lib/server/table-service";
+import { addChat, adminAdjustWallet, adminSetUserStatus, closeTable, createInvite, createTable, dailyRefill, getEvents, getLedger, getTableState, getUserOverview, joinWithInvite, leaderboard, leaveTable, listTables, markReady, placeBet, reconnectTable, releaseSeat, roundHistory, submitAction, takeSeat, updateTableConfig, validateInvite } from "../../../../lib/server/table-service";
 import type { BlackjackAction } from "../../../../packages/game-core/src";
 
 const bodyJson = async (request: { json(): Promise<unknown> }) => {
@@ -41,7 +41,7 @@ async function handle(request: Request): Promise<Response> {
         if (!discordUserId) throw new HttpError(400, "DISCORD_USER_REQUIRED", "Discord user ID is required");
         const permitted = await getD1().prepare(`SELECT 1 AS permitted FROM discord_identities d JOIN table_memberships m ON m.user_id=d.user_id WHERE d.discord_user_id=? AND m.table_id=? AND m.connection_status!='left'`).bind(discordUserId, botStatus[1]).first();
         if (!permitted) throw new HttpError(403, "TABLE_ACCESS_DENIED", "Join this private table before requesting its status");
-        const row = await getD1().prepare(`SELECT t.id,t.name,t.game_type,t.status,t.visibility,t.dealer_mode,t.max_seats,t.min_bet,t.max_bet,t.current_round_id,t.state_version,t.updated_at,u.display_name AS owner_display_name,(SELECT COUNT(*) FROM seats s WHERE s.table_id=t.id AND s.user_id IS NOT NULL) AS seated_count,(SELECT COUNT(*) FROM table_memberships m WHERE m.table_id=t.id AND m.role='spectator' AND m.connection_status!='left') AS spectator_count FROM tables t JOIN users u ON u.id=t.owner_user_id WHERE t.id=?`).bind(botStatus[1]).first();
+        const row = await getD1().prepare(`SELECT t.id,t.name,t.game_type,t.status,t.visibility,t.dealer_mode,t.max_seats,t.min_bet,t.max_bet,t.current_round_id,t.state_version,t.updated_at,u.display_name AS owner_display_name,(SELECT COUNT(*) FROM seats s WHERE s.table_id=t.id AND s.user_id IS NOT NULL) AS seated_count,(SELECT COUNT(*) FROM table_memberships m WHERE m.table_id=t.id AND m.role='spectator' AND m.connection_status='connected') AS spectator_count FROM tables t JOIN users u ON u.id=t.owner_user_id WHERE t.id=?`).bind(botStatus[1]).first();
         if (!row) throw new HttpError(404, "TABLE_NOT_FOUND", "Table not found"); return apiOk(row, requestId);
       }
       const botClose = route.match(/^bot\/tables\/([^/]+)\/close$/);
@@ -127,6 +127,7 @@ async function handle(request: Request): Promise<Response> {
     if (tableId && actionRoute === "history" && request.method === "GET") return apiOk(await roundHistory(tableId, session.user.id), requestId);
     if (tableId && actionRoute === "seat" && request.method === "POST") return idempotentMutation(request, requestId, session.user.id, route, async () => { const input = z.object({ seatNumber: z.number().int().min(1).max(7) }).parse(await bodyJson(request)); return takeSeat(tableId, session.user.id, input.seatNumber); });
     if (tableId && actionRoute === "release-seat" && request.method === "POST") return idempotentMutation(request, requestId, session.user.id, route, () => releaseSeat(tableId, session.user.id));
+    if (tableId && actionRoute === "reconnect" && request.method === "POST") return idempotentMutation(request, requestId, session.user.id, route, () => reconnectTable(tableId, session.user.id));
     if (tableId && actionRoute === "leave" && request.method === "POST") return idempotentMutation(request, requestId, session.user.id, route, () => leaveTable(tableId, session.user.id));
     if (tableId && actionRoute === "bet" && request.method === "POST") return idempotentMutation(request, requestId, session.user.id, route, async (key) => { const input = z.object({ amount: z.number().int() }).parse(await bodyJson(request)); return placeBet(tableId, session.user.id, input.amount, key); });
     if (tableId && actionRoute === "ready" && request.method === "POST") return idempotentMutation(request, requestId, session.user.id, route, async (key) => { const input = z.object({ ready: z.boolean() }).parse(await bodyJson(request)); return markReady(tableId, session.user.id, input.ready, key); });

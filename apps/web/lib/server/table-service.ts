@@ -13,8 +13,15 @@ const createTableSchema = z.object({
   blackjackPayout: z.number().min(1).max(2).default(1.5),
   dealerHitsSoft17: z.boolean().default(false),
   allowSurrender: z.boolean().default(true),
+  maxSplits: z.number().int().min(0).max(4).default(3),
+  hitSplitAces: z.boolean().default(false),
+  doubleAfterSplit: z.boolean().default(true),
+  turnSeconds: z.number().int().min(10).max(90).default(25),
   visibility: z.enum(["private", "friends", "public"]).default("private"),
 });
+
+const PRESENCE_TOUCH_INTERVAL_MS = 10_000;
+const PRESENCE_STALE_AFTER_MS = 30_000;
 
 type TableRow = {
   id: string; game_type: string; owner_user_id: string; name: string; status: string; visibility: string; dealer_mode: string;
@@ -42,6 +49,23 @@ async function requireMembership(tableId: string, userId: string, allowSpectator
   const member = await getD1().prepare("SELECT * FROM table_memberships WHERE table_id = ? AND user_id = ? AND connection_status != 'left'").bind(tableId, userId).first<Record<string, unknown>>();
   if (!member || (!allowSpectator && member.role === "spectator")) throw new HttpError(403, "TABLE_ACCESS_DENIED", "Join this table before continuing");
   return member;
+}
+
+async function refreshPresence(tableId: string, userId: string, now = new Date()) {
+  const at = now.toISOString();
+  const touchBefore = new Date(now.getTime() - PRESENCE_TOUCH_INTERVAL_MS).toISOString();
+  const staleBefore = new Date(now.getTime() - PRESENCE_STALE_AFTER_MS).toISOString();
+  const db = getD1();
+  await db.batch([
+    db.prepare("UPDATE table_memberships SET connection_status='connected',last_seen_at=? WHERE table_id=? AND user_id=? AND connection_status!='left' AND leave_after_round=0 AND (connection_status!='connected' OR last_seen_at<?)").bind(at, tableId, userId, touchBefore),
+    db.prepare("UPDATE table_memberships SET connection_status='disconnected' WHERE table_id=? AND connection_status='connected' AND user_id!=? AND last_seen_at<?").bind(tableId, userId, staleBefore),
+  ]);
+  return at;
+}
+
+async function expireStalePresence(now = new Date()) {
+  const staleBefore = new Date(now.getTime() - PRESENCE_STALE_AFTER_MS).toISOString();
+  await getD1().prepare("UPDATE table_memberships SET connection_status='disconnected' WHERE connection_status='connected' AND last_seen_at<?").bind(staleBefore).run();
 }
 
 async function walletStatements(adjustments: WalletAdjustment[], tableId: string | null, roundId: string | null, idempotencyKey: string) {
@@ -76,6 +100,8 @@ function eventStatements(tableId: string, state: BlackjackState, events: ReturnT
 function settlementStatements(tableId: string, state: BlackjackState, at: string) {
   const db = getD1(); const statements: D1PreparedStatement[] = [
     db.prepare("UPDATE table_memberships SET ready=0,pending_bet=NULL WHERE table_id=?").bind(tableId),
+    db.prepare("UPDATE seats SET user_id=NULL,occupied_at=NULL WHERE table_id=? AND user_id IN (SELECT user_id FROM table_memberships WHERE table_id=? AND leave_after_round=1)").bind(tableId, tableId),
+    db.prepare("UPDATE table_memberships SET role=CASE WHEN role='owner' THEN 'owner' ELSE 'spectator' END,connection_status='left',leave_after_round=0,left_at=? WHERE table_id=? AND leave_after_round=1").bind(at, tableId),
   ];
   let shoePosition = 0;
   const addCards = (handId: string, cards: BlackjackState["dealer"]["cards"], revealAll: boolean) => {
@@ -111,7 +137,18 @@ function settlementStatements(tableId: string, state: BlackjackState, at: string
 export async function createTable(user: SessionUser, raw: unknown) {
   const input = createTableSchema.parse(raw); if (input.maxBet < input.minBet) throw new HttpError(400, "INVALID_LIMITS", "Maximum bet must be at least the minimum bet");
   const db = getD1(); const tableId = uid("tbl"); const at = nowIso(); const invite = publicInviteCode();
-  const rules: Partial<BlackjackRules> = { deckCount: input.deckCount, minBet: input.minBet, maxBet: input.maxBet, blackjackPayout: input.blackjackPayout, dealerHitsSoft17: input.dealerHitsSoft17, allowSurrender: input.allowSurrender };
+  const rules: Partial<BlackjackRules> = {
+    deckCount: input.deckCount,
+    minBet: input.minBet,
+    maxBet: input.maxBet,
+    blackjackPayout: input.blackjackPayout,
+    dealerHitsSoft17: input.dealerHitsSoft17,
+    allowSurrender: input.allowSurrender,
+    maxSplits: input.maxSplits,
+    hitSplitAces: input.hitSplitAces,
+    doubleAfterSplit: input.doubleAfterSplit,
+    turnSeconds: input.turnSeconds,
+  };
   const statements: D1PreparedStatement[] = [
     db.prepare(`INSERT INTO tables (id,game_type,owner_user_id,name,status,visibility,dealer_mode,max_seats,min_bet,max_bet,rules_json,state_version,created_at,updated_at) VALUES (?,'blackjack',?,?,'open',?,'automated',?,?,?,?,0,?,?)`)
       .bind(tableId, user.id, cleanText(input.name, 40), input.visibility, input.maxSeats, input.minBet, input.maxBet, JSON.stringify(rules), at, at),
@@ -125,10 +162,11 @@ export async function createTable(user: SessionUser, raw: unknown) {
 }
 
 export async function listTables(userId: string): Promise<TableSummary[]> {
+  await expireStalePresence();
   const rows = await getD1().prepare(`
     SELECT t.id,t.name,t.game_type,t.status,t.visibility,t.max_seats,t.min_bet,t.max_bet,t.updated_at,u.display_name AS owner_display_name,
       SUM(CASE WHEN s.user_id IS NOT NULL THEN 1 ELSE 0 END) AS seated_count,
-      (SELECT COUNT(*) FROM table_memberships tm2 WHERE tm2.table_id=t.id AND tm2.role='spectator' AND tm2.connection_status!='left') AS spectator_count
+      (SELECT COUNT(*) FROM table_memberships tm2 WHERE tm2.table_id=t.id AND tm2.role='spectator' AND tm2.connection_status='connected') AS spectator_count
     FROM tables t JOIN users u ON u.id=t.owner_user_id
     LEFT JOIN table_memberships tm ON tm.table_id=t.id AND tm.user_id=? AND tm.connection_status!='left'
     LEFT JOIN seats s ON s.table_id=t.id
@@ -149,7 +187,7 @@ export async function joinWithInvite(userId: string, code: string) {
   const invite = await validateInvite(code); const db = getD1(); const at = nowIso(); const hash = await sha256(code.toUpperCase().trim());
   const existing = await db.prepare("SELECT 1 AS joined FROM table_memberships WHERE table_id=? AND user_id=?").bind(invite.tableId, userId).first();
   const statements: D1PreparedStatement[] = [
-    db.prepare(`INSERT INTO table_memberships (table_id,user_id,role,connection_status,ready,joined_at,last_seen_at) VALUES (?,?,'spectator','connected',0,?,?) ON CONFLICT(table_id,user_id) DO UPDATE SET connection_status='connected',role=CASE WHEN table_memberships.role='owner' THEN 'owner' ELSE 'spectator' END,left_at=NULL,last_seen_at=excluded.last_seen_at`).bind(invite.tableId, userId, at, at),
+    db.prepare(`INSERT INTO table_memberships (table_id,user_id,role,connection_status,ready,leave_after_round,joined_at,last_seen_at) VALUES (?,?,'spectator','connected',0,0,?,?) ON CONFLICT(table_id,user_id) DO UPDATE SET connection_status='connected',role=CASE WHEN table_memberships.role IN ('owner','player') THEN table_memberships.role ELSE 'spectator' END,leave_after_round=0,left_at=NULL,last_seen_at=excluded.last_seen_at`).bind(invite.tableId, userId, at, at),
   ];
   if (!existing) statements.push(db.prepare("UPDATE invite_codes SET use_count=use_count+1 WHERE code_hash=?").bind(hash));
   await db.batch(statements);
@@ -173,7 +211,7 @@ export async function takeSeat(tableId: string, userId: string, seatNumber: numb
   const at = nowIso(); await db.batch([
     db.prepare("UPDATE seats SET user_id=NULL,occupied_at=NULL WHERE table_id=? AND user_id=?").bind(tableId, userId),
     db.prepare("UPDATE seats SET user_id=?,occupied_at=? WHERE table_id=? AND seat_number=? AND user_id IS NULL").bind(userId, at, tableId, seatNumber),
-    db.prepare("UPDATE table_memberships SET role=CASE WHEN role='owner' THEN 'owner' ELSE 'player' END,connection_status='connected',last_seen_at=? WHERE table_id=? AND user_id=?").bind(at, tableId, userId),
+    db.prepare("UPDATE table_memberships SET role=CASE WHEN role='owner' THEN 'owner' ELSE 'player' END,connection_status='connected',leave_after_round=0,left_at=NULL,last_seen_at=? WHERE table_id=? AND user_id=?").bind(at, tableId, userId),
   ]);
   return { seatNumber };
 }
@@ -183,7 +221,7 @@ export async function releaseSeat(tableId: string, userId: string) {
   if (table.status === "in_round") throw new HttpError(409, "ROUND_IN_PROGRESS", "Your seat is held until this round finishes");
   await getD1().batch([
     getD1().prepare("UPDATE seats SET user_id=NULL,occupied_at=NULL WHERE table_id=? AND user_id=?").bind(tableId, userId),
-    getD1().prepare("UPDATE table_memberships SET role=CASE WHEN role='owner' THEN 'owner' ELSE 'spectator' END,ready=0,pending_bet=NULL WHERE table_id=? AND user_id=?").bind(tableId, userId),
+    getD1().prepare("UPDATE table_memberships SET role=CASE WHEN role='owner' THEN 'owner' ELSE 'spectator' END,ready=0,leave_after_round=0,pending_bet=NULL WHERE table_id=? AND user_id=?").bind(tableId, userId),
   ]); return { released: true };
 }
 
@@ -191,13 +229,20 @@ export async function leaveTable(tableId: string, userId: string) {
   const table = await loadTable(tableId); await requireMembership(tableId, userId);
   const at = nowIso(); const db = getD1();
   if (table.status === "in_round") {
-    await db.prepare("UPDATE table_memberships SET connection_status='disconnected',last_seen_at=? WHERE table_id=? AND user_id=?").bind(at, tableId, userId).run();
+    await db.prepare("UPDATE table_memberships SET connection_status='disconnected',leave_after_round=1,last_seen_at=? WHERE table_id=? AND user_id=?").bind(at, tableId, userId).run();
     return { left: false, seatHeldUntilRoundEnd: true };
   }
   await db.batch([
     db.prepare("UPDATE seats SET user_id=NULL,occupied_at=NULL WHERE table_id=? AND user_id=?").bind(tableId, userId),
-    db.prepare("UPDATE table_memberships SET connection_status='left',ready=0,pending_bet=NULL,left_at=? WHERE table_id=? AND user_id=?").bind(at, tableId, userId),
+    db.prepare("UPDATE table_memberships SET role=CASE WHEN role='owner' THEN 'owner' ELSE 'spectator' END,connection_status='left',ready=0,leave_after_round=0,pending_bet=NULL,left_at=? WHERE table_id=? AND user_id=?").bind(at, tableId, userId),
   ]); return { left: true, seatHeldUntilRoundEnd: false };
+}
+
+export async function reconnectTable(tableId: string, userId: string) {
+  await requireMembership(tableId, userId);
+  const at = nowIso();
+  await getD1().prepare("UPDATE table_memberships SET connection_status='connected',leave_after_round=0,left_at=NULL,last_seen_at=? WHERE table_id=? AND user_id=? AND connection_status!='left'").bind(at, tableId, userId).run();
+  return { reconnected: true };
 }
 
 export async function placeBet(tableId: string, userId: string, amount: number, idempotencyKey: string) {
@@ -355,8 +400,9 @@ async function recoverIfNeeded(table: TableRow) {
 }
 
 export async function getTableState(tableId: string, userId: string) {
-  let table = await loadTable(tableId); const member = await requireMembership(tableId, userId); table = await recoverIfNeeded(table);
-  await getD1().prepare("UPDATE table_memberships SET connection_status='connected',last_seen_at=? WHERE table_id=? AND user_id=?").bind(nowIso(), tableId, userId).run();
+  let table = await loadTable(tableId); let member = await requireMembership(tableId, userId); table = await recoverIfNeeded(table);
+  await refreshPresence(tableId, userId);
+  member = await requireMembership(tableId, userId);
   const people = await getD1().prepare(`SELECT tm.user_id,tm.role,tm.connection_status,tm.ready,tm.pending_bet,u.display_name,u.avatar_url,w.balance,s.seat_number FROM table_memberships tm JOIN users u ON u.id=tm.user_id LEFT JOIN wallets w ON w.user_id=tm.user_id LEFT JOIN seats s ON s.table_id=tm.table_id AND s.user_id=tm.user_id WHERE tm.table_id=? AND tm.connection_status!='left' ORDER BY COALESCE(s.seat_number,99),tm.joined_at`).bind(tableId).all<Record<string, string | number | null>>();
   const chat = await getD1().prepare(`SELECT c.id,c.kind,c.body,c.created_at,u.id AS user_id,u.display_name FROM chat_messages c JOIN users u ON u.id=c.user_id WHERE c.table_id=? ORDER BY c.created_at DESC LIMIT 40`).bind(tableId).all<Record<string, string>>();
   const wallet = await getD1().prepare("SELECT balance FROM wallets WHERE user_id=?").bind(userId).first<{ balance: number }>();
@@ -374,6 +420,7 @@ export async function getTableState(tableId: string, userId: string) {
 
 export async function getEvents(tableId: string, userId: string, sinceVersion: number) {
   await requireMembership(tableId, userId);
+  await refreshPresence(tableId, userId);
   const rows = await getD1().prepare("SELECT id,state_version,event_type,public_payload_json,private_payload_json,created_at,round_id FROM game_events WHERE table_id=? AND state_version>? ORDER BY state_version,id LIMIT 100").bind(tableId, sinceVersion).all<Record<string, string | number | null>>();
   return rows.results.map((row) => {
     const parsed = JSON.parse(String(row.public_payload_json));
@@ -394,10 +441,13 @@ export async function updateTableConfig(tableId: string, userId: string, raw: un
   const table = await loadTable(tableId); if (table.owner_user_id !== userId) throw new HttpError(403, "OWNER_REQUIRED", "Only the table owner can change the table");
   if (table.status === "in_round") throw new HttpError(409, "ROUND_IN_PROGRESS", "Change rules between rounds");
   const schema = z.object({
+    expectedVersion: z.number().int().nonnegative().optional(),
     name: z.string().trim().min(2).max(40).optional(),
     visibility: z.enum(["private", "friends", "public"]).optional(),
     dealerMode: z.enum(["automated", "player"]).optional(),
     dealerUserId: z.string().nullable().optional(),
+    minBet: z.number().int().min(1).max(100_000).optional(),
+    maxBet: z.number().int().min(1).max(1_000_000).optional(),
     rules: z.object({
       deckCount: z.number().int().min(1).max(8).optional(),
       blackjackPayout: z.number().min(1).max(2).optional(),
@@ -409,11 +459,39 @@ export async function updateTableConfig(tableId: string, userId: string, raw: un
       turnSeconds: z.number().int().min(10).max(90).optional(),
     }).strict().optional(),
   }).strict();
-  const input = schema.parse(raw); const nextRules = { ...JSON.parse(table.rules_json), ...(input.rules ?? {}) };
+  const input = schema.parse(raw);
   if (input.dealerMode === "player") throw new HttpError(409, "PLAYER_DEALER_NOT_ENABLED", "Player-controlled dealer mode is reserved by the API but is not enabled in this release");
-  await getD1().prepare("UPDATE tables SET name=?,visibility=?,dealer_mode=?,dealer_user_id=?,rules_json=?,updated_at=? WHERE id=?")
-    .bind(input.name ? cleanText(input.name, 40) : table.name, input.visibility ?? table.visibility, input.dealerMode ?? table.dealer_mode, input.dealerUserId === undefined ? table.dealer_user_id : input.dealerUserId, JSON.stringify(nextRules), nowIso(), tableId).run();
-  return { updated: true };
+  if (input.dealerUserId) throw new HttpError(409, "PLAYER_DEALER_NOT_ENABLED", "A dealer user can only be assigned when player-controlled dealing is enabled");
+  const name = input.name === undefined ? table.name : cleanText(input.name, 40);
+  if (name.length < 2) throw new HttpError(400, "INVALID_TABLE_NAME", "Table name must contain at least two visible characters");
+  const minBet = input.minBet ?? table.min_bet; const maxBet = input.maxBet ?? table.max_bet;
+  if (maxBet < minBet) throw new HttpError(400, "INVALID_LIMITS", "Maximum bet must be at least the minimum bet");
+  const nextRules: Partial<BlackjackRules> = { ...JSON.parse(table.rules_json), ...(input.rules ?? {}), minBet, maxBet };
+  const visibility = input.visibility ?? table.visibility;
+  const dealerMode = input.dealerMode ?? table.dealer_mode;
+  const dealerUserId = input.dealerUserId === undefined ? table.dealer_user_id : input.dealerUserId;
+  const expectedVersion = input.expectedVersion ?? table.state_version; const stateVersion = expectedVersion + 1;
+  const at = nowIso(); const eventId = uid("evt");
+  const publicPayload = { name, visibility, dealerMode, minBet, maxBet, rules: nextRules };
+  const envelope: RealtimeEnvelope = { id: eventId, version: stateVersion, tableId, roundId: null, type: "table.configured", timestamp: at, publicPayload };
+  const db = getD1();
+  const results = await db.batch([
+    db.prepare(`UPDATE tables SET name=?,visibility=?,dealer_mode=?,dealer_user_id=?,min_bet=?,max_bet=?,rules_json=?,state_version=state_version+1,last_event_at=?,updated_at=?
+      WHERE id=? AND status!='in_round' AND state_version=?
+      AND NOT EXISTS (SELECT 1 FROM table_memberships WHERE table_id=? AND (ready=1 OR pending_bet IS NOT NULL))`)
+      .bind(name, visibility, dealerMode, dealerUserId, minBet, maxBet, JSON.stringify(nextRules), at, at, tableId, expectedVersion, tableId),
+    db.prepare(`INSERT INTO game_events (id,table_id,round_id,state_version,event_type,public_payload_json,private_payload_json,created_at)
+      SELECT ?,?,NULL,?,'table.configured',?,NULL,? WHERE EXISTS (SELECT 1 FROM tables WHERE id=? AND state_version=? AND updated_at=?)`)
+      .bind(eventId, tableId, stateVersion, JSON.stringify(envelope), at, tableId, stateVersion, at),
+  ]);
+  if (!Number(results[0].meta.changes ?? 0)) {
+    const latest = await loadTable(tableId);
+    if (latest.status === "in_round") throw new HttpError(409, "ROUND_IN_PROGRESS", "Change rules between rounds");
+    const blocker = await db.prepare("SELECT COUNT(*) AS count FROM table_memberships WHERE table_id=? AND (ready=1 OR pending_bet IS NOT NULL)").bind(tableId).first<{ count: number }>();
+    if (Number(blocker?.count ?? 0) > 0) throw new HttpError(409, "TABLE_CONFIGURATION_LOCKED", "Rules are locked after a player has placed a bet or marked ready");
+    throw new HttpError(409, "STALE_STATE", "The table changed before these settings were saved", { currentVersion: latest.state_version });
+  }
+  return { updated: true, stateVersion, config: publicPayload };
 }
 
 export async function closeTable(tableId: string, userId: string) {
