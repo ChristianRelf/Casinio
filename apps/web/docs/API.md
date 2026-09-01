@@ -39,13 +39,16 @@ Errors are stable, machine-readable responses:
 | `GET` | `/readiness` | Database readiness check |
 | `GET` | `/auth/discord?ageConfirmed=true` | Start Discord OAuth with state and PKCE |
 | `GET` | `/auth/discord/callback` | Complete OAuth and issue the session |
-| `POST` | `/auth/dev` | Local development identity only |
+| `GET` | `/auth/dev/status` | Report whether server-gated development access is available |
+| `POST` | `/auth/dev` | Sign in as a development identity when the runtime gate permits it |
 | `GET` | `/auth/session` | Current session user and CSRF token, or `null` |
 | `POST` | `/auth/logout` | Revoke the current server-side session |
 | `GET` | `/me` | User, wallet, and statistics |
 | `GET` | `/me/ledger?limit=100` | Authenticated user's ledger, maximum 250 rows |
 | `POST` | `/me/refill` | Once-per-24-hour play-money recovery allowance |
 | `GET` | `/leaderboard` | Social blackjack standings |
+
+Development sign-in accepts `{ "persona": "chris", "ageConfirmed": true }`, is rate-limited, and returns `NOT_FOUND` outside localhost unless `DEV_AUTH_BYPASS=true`. Chris is the development administrator; Maya and Arthur are normal development users. These identities are marked as development-only and must not replace Discord authentication on a shared deployment.
 
 ## Tables
 

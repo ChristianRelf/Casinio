@@ -18,6 +18,7 @@ async function signIn(page: Page, persona: Persona) {
   const sessionProbe = page.waitForResponse((response) => response.url().endsWith("/api/v1/auth/session"));
   await page.goto("/");
   await sessionProbe;
+  await expect(page.getByText("DEVELOPMENT BYPASS")).toBeVisible();
   const ageConfirmation = page.getByRole("checkbox");
   await page.locator("label.age-check").click();
   await expect(ageConfirmation).toBeChecked();

@@ -4,8 +4,9 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { env as workerEnv } from "cloudflare:workers";
 import { createBlackjackRound, createOrderedShoe, type Card, type Suit } from "../packages/game-core/src";
 import type { SessionUser } from "../packages/contracts/src";
+import { developmentSignIn, developmentSignInEnabled } from "../lib/server/oauth";
 import { createSession, getSession, HttpError, requireCsrf, requireIdempotency, saveIdempotentResult, validateOrigin } from "../lib/server/runtime";
-import { createTable, getEvents, getTableState, joinWithInvite, leaveTable, listTables, markReady, placeBet, reconnectTable, submitAction, takeSeat, updateTableConfig } from "../lib/server/table-service";
+import { createTable, getEvents, getLedger, getTableState, joinWithInvite, leaveTable, listTables, markReady, placeBet, reconnectTable, submitAction, takeSeat, updateTableConfig } from "../lib/server/table-service";
 import { TestD1Database } from "./d1-test-db";
 
 const c = (rank: Card["rank"], suit: Suit = "spade") => ({ rank, suit });
@@ -66,12 +67,30 @@ beforeEach(async () => {
   env.APP_ORIGIN = "http://localhost:3000";
   env.STARTING_BALANCE = "1000";
   env.DAILY_REFILL_AMOUNT = "500";
+  env.DEV_AUTH_BYPASS = "false";
   await installSchema();
 });
 
 afterEach(() => database.close());
 
 describe("authentication and request protection", () => {
+  it("keeps hosted development sign-in behind an explicit runtime gate and age confirmation", async () => {
+    const localRequest = new Request("http://localhost:3000/api/v1/auth/dev");
+    const hostedRequest = new Request("https://casino.example/api/v1/auth/dev", { headers: { "user-agent": "integration-test" } });
+    expect(developmentSignInEnabled(localRequest)).toBe(true);
+    expect(developmentSignInEnabled(hostedRequest)).toBe(false);
+    await expect(developmentSignIn(hostedRequest, "chris", true)).rejects.toMatchObject({ code: "NOT_FOUND" });
+
+    env.DEV_AUTH_BYPASS = "true";
+    expect(developmentSignInEnabled(hostedRequest)).toBe(true);
+    await expect(developmentSignIn(hostedRequest, "chris", false)).rejects.toMatchObject({ code: "AGE_CONFIRMATION_REQUIRED" });
+    const response = await developmentSignIn(hostedRequest, "chris", true);
+    expect(response.status).toBe(204);
+    expect(response.headers.get("set-cookie")).toContain("ls_session=");
+    expect(await database.prepare("SELECT display_name,is_development,age_confirmed_at FROM users WHERE id='dev_chris'").first()).toMatchObject({ display_name: "Chris", is_development: 1 });
+    expect(await database.prepare("SELECT role_id FROM user_roles WHERE user_id='dev_chris'").first()).toMatchObject({ role_id: "role_admin" });
+  });
+
   it("creates server-side sessions and enforces CSRF, origin, and suspension", async () => {
     const chris = user("u1", "Chris"); await seedUser(chris);
     const issued = await createSession(new Request("http://localhost:3000/api/v1/auth/dev", { headers: { "user-agent": "integration-test" } }), chris.id);
@@ -113,6 +132,7 @@ describe("durable multiplayer table service", () => {
     const ledger = await database.prepare("SELECT amount,reason,balance_before,balance_after FROM wallet_ledger WHERE user_id=?").bind(maya.id).all<Record<string, number | string>>();
     expect(wallet).toMatchObject({ balance: 900, version: 1 });
     expect(ledger.results).toEqual([{ amount: -100, reason: "BET_PLACED", balance_before: 1000, balance_after: 900 }]);
+    expect((await getLedger(maya.id, 10)).find((entry) => entry.reason === "BET_PLACED")).toMatchObject({ idempotency_key: "maya-bet-0001" });
     await expect(placeBet(created.tableId, maya.id, 500, "maya-bet-0002")).resolves.toMatchObject({ balance: 500 });
     await expect(placeBet(created.tableId, maya.id, 500, "maya-bet-0003")).resolves.toMatchObject({ balance: 500 });
     expect((await database.prepare("SELECT SUM(amount) AS total FROM wallet_ledger WHERE user_id=?").bind(maya.id).first<{ total: number }>())?.total).toBe(-500);

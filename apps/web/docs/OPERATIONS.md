@@ -13,7 +13,7 @@ Do not run two databases for web and bot. Do not put the bot token, Discord clie
 
 - Set a private production origin and the exact matching OAuth callback.
 - Generate independent high-entropy `SESSION_SECRET` and `DISCORD_BOT_API_SECRET` values.
-- Keep `DEV_AUTH_BYPASS=false`.
+- Keep `DEV_AUTH_BYPASS=false` for every shared or public deployment. It may be enabled temporarily on an owner-only test deployment and must be disabled before access is widened.
 - Configure `DISCORD_ALLOWED_GUILD_ID`, `DISCORD_USER_ALLOWLIST`, or both before sharing the URL.
 - Bind the production D1 database as `DB` and apply every migration in order.
 - Set `STARTING_BALANCE` and `DAILY_REFILL_AMOUNT` as policy values, not real currency claims.

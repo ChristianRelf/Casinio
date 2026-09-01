@@ -1,7 +1,7 @@
 import { ZodError, z } from "zod";
 import { getD1 } from "../../../../db";
-import { developmentSignIn, finishDiscordOAuth, startDiscordOAuth } from "../../../../lib/server/oauth";
-import { HttpError, apiError, apiOk, applyCookies, enforceRateLimit, getSession, json, requireAdmin, requireBot, requireCsrf, requireIdempotency, requireSession, revokeSession, saveIdempotentResult, uid, validateOrigin } from "../../../../lib/server/runtime";
+import { developmentSignIn, developmentSignInEnabled, finishDiscordOAuth, startDiscordOAuth } from "../../../../lib/server/oauth";
+import { HttpError, apiError, apiOk, applyCookies, enforceRateLimit, getSession, json, requireAdmin, requireBot, requireCsrf, requireIdempotency, requireSession, revokeSession, saveIdempotentResult, sha256, uid, validateOrigin } from "../../../../lib/server/runtime";
 import { addChat, adminAdjustWallet, adminSetUserStatus, closeTable, createInvite, createTable, dailyRefill, getEvents, getLedger, getTableState, getUserOverview, joinWithInvite, leaderboard, leaveTable, listTables, markReady, placeBet, reconnectTable, releaseSeat, roundHistory, submitAction, takeSeat, updateTableConfig, validateInvite } from "../../../../lib/server/table-service";
 import type { BlackjackAction } from "../../../../packages/game-core/src";
 
@@ -22,7 +22,8 @@ async function handle(request: Request): Promise<Response> {
     if (route === "readiness") { await getD1().prepare("SELECT 1 AS ready").first(); return apiOk({ status: "ready", database: "connected" }, requestId); }
     if (route === "auth/discord" && request.method === "GET") return startDiscordOAuth(request);
     if (route === "auth/discord/callback" && request.method === "GET") return finishDiscordOAuth(request);
-    if (route === "auth/dev" && request.method === "POST") { validateOrigin(request); const input = z.object({ persona: z.enum(["chris", "maya", "arthur"]) }).parse(await bodyJson(request)); return developmentSignIn(request, input.persona); }
+    if (route === "auth/dev/status" && request.method === "GET") return apiOk({ enabled: developmentSignInEnabled(request) }, requestId);
+    if (route === "auth/dev" && request.method === "POST") { validateOrigin(request); const address = request.headers.get("cf-connecting-ip") ?? request.headers.get("x-forwarded-for") ?? "local"; await enforceRateLimit(`auth-dev:${await sha256(address)}`, 15, 60); const input = z.object({ persona: z.enum(["chris", "maya", "arthur"]), ageConfirmed: z.literal(true) }).parse(await bodyJson(request)); return developmentSignIn(request, input.persona, input.ageConfirmed); }
     if (route === "auth/session" && request.method === "GET") { const session = await getSession(request); return apiOk(session ? { user: session.user, csrfToken: (request.headers.get("cookie") ?? "").match(/(?:^|;\s*)ls_csrf=([^;]+)/)?.[1] ?? null } : null, requestId); }
 
     if (route.startsWith("bot/")) {

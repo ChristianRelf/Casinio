@@ -57,8 +57,14 @@ const devUsers: Record<string, { name: string; admin?: boolean }> = {
   chris: { name: "Chris", admin: true }, maya: { name: "Maya" }, arthur: { name: "Arthur" },
 };
 
-export async function developmentSignIn(request: Request, persona: string): Promise<Response> {
-  const local = ["localhost", "127.0.0.1"].includes(new URL(request.url).hostname); if (!local && getRuntimeEnv().DEV_AUTH_BYPASS !== "true") throw new HttpError(404, "NOT_FOUND", "Not found");
+export function developmentSignInEnabled(request: Request): boolean {
+  const hostname = new URL(request.url).hostname.toLowerCase();
+  return ["localhost", "127.0.0.1", "[::1]"].includes(hostname) || getRuntimeEnv().DEV_AUTH_BYPASS === "true";
+}
+
+export async function developmentSignIn(request: Request, persona: string, ageConfirmed: boolean): Promise<Response> {
+  if (!developmentSignInEnabled(request)) throw new HttpError(404, "NOT_FOUND", "Not found");
+  if (!ageConfirmed) throw new HttpError(400, "AGE_CONFIRMATION_REQUIRED", "Confirm the age and play-money notice before using development access");
   const chosen = devUsers[persona]; if (!chosen) throw new HttpError(400, "UNKNOWN_DEV_USER", "Unknown development user");
   const db = getD1(); const userId = `dev_${persona}`; const at = nowIso(); const starting = Number(getRuntimeEnv().STARTING_BALANCE ?? 10_000);
   const existing = await db.prepare("SELECT id FROM users WHERE id=?").bind(userId).first(); const statements: D1PreparedStatement[] = [

@@ -509,7 +509,7 @@ export async function getUserOverview(userId: string) {
 }
 
 export async function getLedger(userId: string, limit = 100) {
-  const rows = await getD1().prepare("SELECT id,table_id,round_id,amount,reason,balance_before,balance_after,metadata_json,created_at FROM wallet_ledger WHERE user_id=? ORDER BY created_at DESC LIMIT ?").bind(userId, Math.min(250, Math.max(1, limit))).all(); return rows.results;
+  const rows = await getD1().prepare("SELECT id,table_id,round_id,amount,reason,balance_before,balance_after,idempotency_key,metadata_json,created_at FROM wallet_ledger WHERE user_id=? ORDER BY created_at DESC LIMIT ?").bind(userId, Math.min(250, Math.max(1, limit))).all(); return rows.results;
 }
 
 export async function dailyRefill(userId: string, idempotencyKey: string) {

@@ -57,7 +57,7 @@ npm run dev
 
 Open `http://localhost:3000`, confirm the play-money/age notice, and use Chris, Maya, or Arthur under `LOCAL DEVELOPMENT`. These identities are created only on demand, carry `is_development = 1`, and never appear in a normal production leaderboard. Chris receives the development administrator role.
 
-Do not set `DEV_AUTH_BYPASS=true` on an internet-accessible deployment. Localhost development sign-in works without it.
+Localhost development sign-in works without configuration. Setting `DEV_AUTH_BYPASS=true` exposes the same test identities in a production build; use it only on an isolated owner-only deployment and turn it off before sharing access. The server remains authoritative and still requires the age/play-money confirmation.
 
 ## Environment
 
@@ -79,7 +79,7 @@ Copy `.env.example` to an ignored local environment file. Never commit populated
 | `SESSION_SECRET` | web | At least 32 characters; HMAC key for session, CSRF, and IP metadata hashes |
 | `STARTING_BALANCE` | web | New-account play-money balance |
 | `DAILY_REFILL_AMOUNT` | web | Once-per-24-hour recovery allowance |
-| `DEV_AUTH_BYPASS` | web | Dangerous non-local development sign-in override; keep `false` in production |
+| `DEV_AUTH_BYPASS` | web | Explicit non-local test-identity gate; use only on an isolated owner-only deployment |
 
 Generate independent secrets rather than reusing a Discord credential:
 
